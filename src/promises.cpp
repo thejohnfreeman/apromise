@@ -10,8 +10,9 @@
 // TODO: Non-template base type for heterogeneous containers,
 // or can we use shared_ptr<void>?
 // TODO: Factor out `settle` method.
+// TODO: `then` returns another promise pointer.
 
-enum State { PENDING, SUBSCRIBING, VALUE, ERROR };
+enum State { PENDING, SUBSCRIBING, FULFILLED, REJECTED };
 
 template <typename V>
 class Promise : public std::enable_shared_from_this<Promise<V>> {
@@ -22,6 +23,10 @@ public:
     using callback_type = std::function<void(pointer_type)>;
 
 private:
+    struct construct_pending {};
+    struct construct_fulfilled {};
+    struct construct_rejected {};
+
     union Storage
     {
         std::vector<callback_type> callbacks_;
@@ -29,21 +34,53 @@ private:
         error_type error_;
 
         Storage() : callbacks_{} {}
+
+        template <typename... Args>
+        Storage(construct_fulfilled, Args&&... args)
+        : value_(std::forward<Args>(args)...)
+        {}
+
+        template <typename... Args>
+        Storage(construct_rejected, Args&&... args)
+        : error_(std::forward<Args>(args)...)
+        {}
+
         ~Storage() {}
     };
 
     Storage storage_;
     std::atomic<State> state_;
 
-    // This type blocks everyone from directly constructing a promise.
-    struct blocker {};
-
 public:
     Promise() = delete;
-    Promise(blocker) {}
+    Promise(construct_pending) {}
 
-    static pointer_type make() {
-        return std::make_shared<Promise<V>>(blocker{});
+    template <typename... Args>
+    Promise(construct_fulfilled ctor, Args&&... args)
+    : state_(FULFILLED)
+    , storage_(ctor, std::forward<Args>(args)...)
+    {}
+
+    template <typename... Args>
+    Promise(construct_rejected ctor, Args&&... args)
+    : state_(REJECTED)
+    , storage_(ctor, std::forward<Args>(args)...)
+    {}
+
+    static pointer_type pending() {
+        return std::make_shared<Promise<V>>(construct_pending{});
+    }
+
+    template <typename... Args>
+    static pointer_type fulfilled(Args&&... args) {
+        return std::make_shared<Promise<V>>(
+                construct_fulfilled{}, std::forward<Args>(args)...);
+    }
+
+    template <typename... Args>
+    static pointer_type rejected(Args&&... args) {
+        return std::make_shared<Promise<V>>(
+                construct_rejected{}, std::forward<Args>(args)...);
     }
 
     ~Promise()
@@ -53,13 +90,13 @@ public:
         {
             std::destroy_at(&storage_.callbacks_);
         }
-        else if (status == VALUE)
+        else if (status == FULFILLED)
         {
             std::destroy_at(&storage_.value_);
         }
         else
         {
-            assert(status == ERROR);
+            assert(status == REJECTED);
             std::destroy_at(&storage_.error_);
         }
     }
@@ -77,7 +114,8 @@ public:
                 continue;
             }
             if (expected != PENDING) {
-                // TODO: Schedule immediately.
+                // TODO: Schedule this call.
+                cb(this->shared_from_this());
                 return;
             }
         }
@@ -87,12 +125,12 @@ public:
     }
 
     value_type const& value() const {
-        assert(state() == VALUE);
+        assert(state() == FULFILLED);
         return storage_.value_;
     }
 
     error_type const& error() const {
-        assert(state() == ERROR);
+        assert(state() == REJECTED);
         return storage_.error_;
     }
 
@@ -107,7 +145,7 @@ public:
         decltype(storage_.callbacks_) callbacks(std::move(storage_.callbacks_));
         std::destroy_at(&storage_.callbacks_);
         std::construct_at(&storage_.value_, std::forward<Args>(args)...);
-        state_.store(VALUE, std::memory_order_release);
+        state_.store(FULFILLED, std::memory_order_release);
         for (auto& cb : callbacks) {
             cb(this->shared_from_this());
         }
@@ -124,7 +162,7 @@ public:
         decltype(storage_.callbacks_) callbacks(std::move(storage_.callbacks_));
         std::destroy_at(&storage_.callbacks_);
         std::construct_at(&storage_.error_, std::forward<Args>(args)...);
-        state_.store(ERROR, std::memory_order_release);
+        state_.store(REJECTED, std::memory_order_release);
         for (auto& cb : callbacks) {
             cb(this->shared_from_this());
         }
@@ -145,15 +183,39 @@ int main(int argc, const char** argv) {
             sizeof(std::enable_shared_from_this<void>));
     std::printf("sizeof(promise) == %lu\n", sizeof(promise_type));
 
-    auto promise = promise_type::make();
-    promise->then([](auto p){
-        if (p->state() == VALUE) {
-            std::printf("value == %d\n", p->value());
-        } else {
-            std::printf("expected a value");
-        }
-    });
-    promise->fulfill(42);
+    {
+        auto p1 = promise_type::pending();
+        p1->then([](auto p){
+            if (p->state() == FULFILLED) {
+                std::printf("value == %d\n", p->value());
+            } else {
+                std::printf("expected a value");
+            }
+        });
+        p1->fulfill(42);
+    }
+
+    {
+        auto p1 = promise_type::fulfilled('c');
+        p1->then([](auto p){
+            if (p->state() == FULFILLED) {
+                std::printf("value == %d\n", p->value());
+            } else {
+                std::printf("expected a value");
+            }
+        });
+    }
+
+    {
+        auto p1 = promise_type::rejected("hello, world!");
+        p1->then([](auto p){
+            if (p->state() == REJECTED) {
+                std::printf("error == %s\n", p->error());
+            } else {
+                std::printf("expected an error");
+            }
+        });
+    }
 
     return 0;
 }
