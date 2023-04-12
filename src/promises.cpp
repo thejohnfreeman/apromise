@@ -2,17 +2,49 @@
 #include <cassert>
 #include <cstdio>
 #include <functional>
+#include <list>
 #include <memory>
 #include <string>
+#include <vector>
 
-// TODO: Scheduler.
-// TODO: Test with single-thread loop scheduler.
 // TODO: Non-template base type for heterogeneous containers,
 // or can we use shared_ptr<void>?
 // TODO: Factor out `settle` method.
 // TODO: `then` returns another promise pointer.
 
 enum State { PENDING, SUBSCRIBING, FULFILLED, REJECTED };
+
+class Scheduler {
+public:
+    using job_type = std::function<void()>;
+    virtual void schedule(job_type&& job) = 0;
+    virtual ~Scheduler() {}
+};
+
+class SingleThreadedScheduler : public Scheduler {
+private:
+    std::list<job_type> jobs_;
+public:
+    static SingleThreadedScheduler* dflt() {
+        thread_local SingleThreadedScheduler scheduler;
+        return &scheduler;
+    }
+
+    void run() {
+        while (!jobs_.empty()) {
+            auto& job = jobs_.front();
+            job();
+            jobs_.pop_front();
+        }
+    }
+
+    virtual void schedule(job_type&& job) override {
+        jobs_.push_back(std::move(job));
+    }
+
+    virtual ~SingleThreadedScheduler() {
+    }
+};
 
 template <typename V>
 class Promise : public std::enable_shared_from_this<Promise<V>> {
@@ -48,8 +80,9 @@ private:
         ~Storage() {}
     };
 
-    Storage storage_;
+    Scheduler* scheduler_ = SingleThreadedScheduler::dflt();
     std::atomic<State> state_;
+    Storage storage_;
 
 public:
     Promise() = delete;
@@ -114,8 +147,10 @@ public:
                 continue;
             }
             if (expected != PENDING) {
-                // TODO: Schedule this call.
-                cb(this->shared_from_this());
+                scheduler_->schedule(
+                    [self = this->shared_from_this(), cb = std::move(cb)] ()
+                    { cb(std::move(self)); }
+                );
                 return;
             }
         }
@@ -147,7 +182,10 @@ public:
         std::construct_at(&storage_.value_, std::forward<Args>(args)...);
         state_.store(FULFILLED, std::memory_order_release);
         for (auto& cb : callbacks) {
-            cb(this->shared_from_this());
+            scheduler_->schedule(
+                [self = this->shared_from_this(), cb = std::move(cb)] ()
+                { cb(std::move(self)); }
+            );
         }
     }
 
@@ -164,7 +202,10 @@ public:
         std::construct_at(&storage_.error_, std::forward<Args>(args)...);
         state_.store(REJECTED, std::memory_order_release);
         for (auto& cb : callbacks) {
-            cb(this->shared_from_this());
+            scheduler_->schedule(
+                [self = this->shared_from_this(), cb = std::move(cb)] ()
+                { cb(std::move(self)); }
+            );
         }
     }
 };
@@ -174,11 +215,13 @@ int main(int argc, const char** argv) {
     using value_type = promise_type::value_type;
     using error_type = promise_type::error_type;
 
+    std::printf("sizeof(callback) == %lu\n",
+            sizeof(promise_type::callback_type));
     std::printf("sizeof(callbacks_) == %lu\n",
             sizeof(std::vector<std::function<void()>>));
-    std::printf("sizeof(value) == %lu\n", sizeof(value_type));
-    std::printf("sizeof(error) == %lu\n", sizeof(error_type));
-    std::printf("sizeof(state) == %lu\n", sizeof(std::atomic<State>));
+    std::printf("sizeof(value_) == %lu\n", sizeof(value_type));
+    std::printf("sizeof(error_) == %lu\n", sizeof(error_type));
+    std::printf("sizeof(state_) == %lu\n", sizeof(std::atomic<State>));
     std::printf("sizeof(enable_shared_from_this) == %lu\n",
             sizeof(std::enable_shared_from_this<void>));
     std::printf("sizeof(promise) == %lu\n", sizeof(promise_type));
@@ -192,7 +235,9 @@ int main(int argc, const char** argv) {
                 std::printf("expected a value");
             }
         });
-        p1->fulfill(42);
+        auto sch = SingleThreadedScheduler::dflt();
+        sch->schedule([&](){ p1->fulfill(42); });
+        sch->run();
     }
 
     {
@@ -204,6 +249,8 @@ int main(int argc, const char** argv) {
                 std::printf("expected a value");
             }
         });
+        auto sch = SingleThreadedScheduler::dflt();
+        sch->run();
     }
 
     {
@@ -215,6 +262,8 @@ int main(int argc, const char** argv) {
                 std::printf("expected an error");
             }
         });
+        auto sch = SingleThreadedScheduler::dflt();
+        sch->run();
     }
 
     return 0;
