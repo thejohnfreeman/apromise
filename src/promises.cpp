@@ -9,7 +9,6 @@
 
 // TODO: Non-template base type for heterogeneous containers,
 // or can we use shared_ptr<void>?
-// TODO: Factor out `settle` method.
 // TODO: `then` returns another promise pointer.
 
 enum State { PENDING, SUBSCRIBING, FULFILLED, REJECTED };
@@ -171,6 +170,17 @@ public:
 
     template <typename... Args>
     void fulfill(Args&&... args) {
+        return settle(FULFILLED, &Storage::value_, std::forward<Args>(args)...);
+    }
+
+    template <typename... Args>
+    void reject(Args&&... args) {
+        return settle(REJECTED, &Storage::error_, std::forward<Args>(args)...);
+    }
+
+private:
+    template <typename T, typename... Args>
+    void settle(State status, T Storage::*member, Args&&... args) {
         State expected = PENDING;
         while (!state_.compare_exchange_weak(
                     expected, SUBSCRIBING, std::memory_order_acquire))
@@ -179,8 +189,8 @@ public:
         }
         decltype(storage_.callbacks_) callbacks(std::move(storage_.callbacks_));
         std::destroy_at(&storage_.callbacks_);
-        std::construct_at(&storage_.value_, std::forward<Args>(args)...);
-        state_.store(FULFILLED, std::memory_order_release);
+        std::construct_at(&(storage_.*member), std::forward<Args>(args)...);
+        state_.store(status, std::memory_order_release);
         for (auto& cb : callbacks) {
             scheduler_->schedule(
                 [self = this->shared_from_this(), cb = std::move(cb)] ()
@@ -189,25 +199,6 @@ public:
         }
     }
 
-    template <typename... Args>
-    void reject(Args&&... args) {
-        State expected = PENDING;
-        while (!state_.compare_exchange_weak(
-                    expected, SUBSCRIBING, std::memory_order_acquire))
-        {
-            expected = PENDING;
-        }
-        decltype(storage_.callbacks_) callbacks(std::move(storage_.callbacks_));
-        std::destroy_at(&storage_.callbacks_);
-        std::construct_at(&storage_.error_, std::forward<Args>(args)...);
-        state_.store(REJECTED, std::memory_order_release);
-        for (auto& cb : callbacks) {
-            scheduler_->schedule(
-                [self = this->shared_from_this(), cb = std::move(cb)] ()
-                { cb(std::move(self)); }
-            );
-        }
-    }
 };
 
 int main(int argc, const char** argv) {
