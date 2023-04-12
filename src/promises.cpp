@@ -6,7 +6,7 @@
 int main(int argc, const char** argv) {
     using namespace promises;
 
-    using promise_type = Promise<int>;
+    using promise_type = AsyncPromise<int>;
     using value_type = promise_type::value_type;
     using error_type = promise_type::error_type;
 

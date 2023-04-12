@@ -51,13 +51,13 @@ public:
 };
 
 template <typename V>
-class PROMISES_EXPORT Promise
-: public std::enable_shared_from_this<Promise<V>>
+class PROMISES_EXPORT AsyncPromise
+: public std::enable_shared_from_this<AsyncPromise<V>>
 {
 public:
     using value_type = V;
     using error_type = char const*;
-    using pointer_type = std::shared_ptr<Promise<V>>;
+    using pointer_type = std::shared_ptr<AsyncPromise<V>>;
     using callback_type = std::function<void(pointer_type)>;
 
 private:
@@ -91,38 +91,38 @@ private:
     Storage storage_;
 
 public:
-    Promise() = delete;
-    Promise(construct_pending) {}
+    AsyncPromise() = delete;
+    AsyncPromise(construct_pending) {}
 
     template <typename... Args>
-    Promise(construct_fulfilled ctor, Args&&... args)
+    AsyncPromise(construct_fulfilled ctor, Args&&... args)
     : state_(FULFILLED)
     , storage_(ctor, std::forward<Args>(args)...)
     {}
 
     template <typename... Args>
-    Promise(construct_rejected ctor, Args&&... args)
+    AsyncPromise(construct_rejected ctor, Args&&... args)
     : state_(REJECTED)
     , storage_(ctor, std::forward<Args>(args)...)
     {}
 
     static pointer_type pending() {
-        return std::make_shared<Promise<V>>(construct_pending{});
+        return std::make_shared<AsyncPromise<V>>(construct_pending{});
     }
 
     template <typename... Args>
     static pointer_type fulfilled(Args&&... args) {
-        return std::make_shared<Promise<V>>(
+        return std::make_shared<AsyncPromise<V>>(
                 construct_fulfilled{}, std::forward<Args>(args)...);
     }
 
     template <typename... Args>
     static pointer_type rejected(Args&&... args) {
-        return std::make_shared<Promise<V>>(
+        return std::make_shared<AsyncPromise<V>>(
                 construct_rejected{}, std::forward<Args>(args)...);
     }
 
-    ~Promise()
+    ~AsyncPromise()
     {
         auto status = state();
         if (status == PENDING)
