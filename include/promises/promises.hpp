@@ -5,6 +5,7 @@
 
 #include <atomic>
 #include <cassert>
+#include <exception>
 #include <functional>
 #include <list>
 #include <memory>
@@ -56,7 +57,7 @@ class PROMISES_EXPORT AsyncPromise
 {
 public:
     using value_type = V;
-    using error_type = char const*;
+    using error_type = std::exception_ptr;
     using pointer_type = std::shared_ptr<AsyncPromise<V>>;
     using callback_type = std::function<void(pointer_type)>;
 
@@ -116,10 +117,10 @@ public:
                 construct_fulfilled{}, std::forward<Args>(args)...);
     }
 
-    template <typename... Args>
-    static pointer_type rejected(Args&&... args) {
+    template <typename E>
+    static pointer_type rejected(E const& error) {
         return std::make_shared<AsyncPromise<V>>(
-                construct_rejected{}, std::forward<Args>(args)...);
+                construct_rejected{}, std::make_exception_ptr(error));
     }
 
     ~AsyncPromise()

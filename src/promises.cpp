@@ -1,3 +1,4 @@
+#include <exception>
 #include <promises/promises.hpp>
 
 #include <cstdio>
@@ -49,10 +50,16 @@ int main(int argc, const char** argv) {
     }
 
     {
-        auto p1 = promise_type::rejected("hello, world!");
+        auto e = std::runtime_error("hello, world!");
+        std::printf("error == %s\n", e.what());
+        auto p1 = promise_type::rejected(e);
         p1->then([](auto p){
             if (p->state() == REJECTED) {
-                std::printf("error == %s\n", p->error());
+                try {
+                    std::rethrow_exception(p->error());
+                } catch (std::exception const& error) {
+                    std::printf("error == %s\n", error.what());
+                }
             } else {
                 std::printf("expected an error");
             }
