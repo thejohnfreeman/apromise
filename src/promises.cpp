@@ -24,7 +24,7 @@ int main(int argc, const char** argv) {
 
     {
         auto p1 = promise_type::pending();
-        p1->then([](auto p){
+        p1->subscribe([](auto p){
             if (p->state() == FULFILLED) {
                 std::printf("value == %d\n", p->value());
             } else {
@@ -38,7 +38,7 @@ int main(int argc, const char** argv) {
 
     {
         auto p1 = promise_type::fulfilled('c');
-        p1->then([](auto p){
+        p1->subscribe([](auto p){
             if (p->state() == FULFILLED) {
                 std::printf("value == %d\n", p->value());
             } else {
@@ -53,7 +53,7 @@ int main(int argc, const char** argv) {
         auto e = std::runtime_error("hello, world!");
         std::printf("error == %s\n", e.what());
         auto p1 = promise_type::rejected(e);
-        p1->then([](auto p){
+        p1->subscribe([](auto p){
             if (p->state() == REJECTED) {
                 try {
                     std::rethrow_exception(p->error());

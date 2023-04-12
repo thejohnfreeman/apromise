@@ -145,7 +145,7 @@ public:
         return state_.load(std::memory_order_acquire);
     }
 
-    void then(callback_type&& cb) {
+    void subscribe(callback_type&& cb) {
         State expected = PENDING;
         while (!state_.compare_exchange_weak(
                     expected, SUBSCRIBING, std::memory_order_acquire))
