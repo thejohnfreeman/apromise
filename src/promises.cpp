@@ -1,4 +1,5 @@
 #include <exception>
+#include <memory>
 #include <promises/promises.hpp>
 
 #include <cstdio>
@@ -81,6 +82,22 @@ int main(int argc, const char** argv) {
         auto sch = SingleThreadedScheduler::dflt();
         sch->schedule([&](){ p1->fulfill(42); });
         sch->run();
+    }
+
+    {
+        std::vector<std::shared_ptr<void>> ptrs;
+        {
+            auto p1 = AsyncPromise<int>::fulfilled(42);
+            ptrs.push_back(p1);
+        }
+        {
+            auto p2 = AsyncPromise<double>::fulfilled(3.14);
+            ptrs.push_back(p2);
+        }
+        auto p3 = std::static_pointer_cast<AsyncPromise<int>>(ptrs[0]);
+        std::printf("value == %d\n", p3->value());
+        auto p4 = std::static_pointer_cast<AsyncPromise<double>>(ptrs[1]);
+        std::printf("value == %f\n", p4->value());
     }
 
     return 0;

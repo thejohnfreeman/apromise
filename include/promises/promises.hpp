@@ -13,9 +13,6 @@
 
 namespace promises {
 
-// TODO: Non-template base type for heterogeneous containers,
-// or can we use shared_ptr<void>?
-
 enum State { PENDING, SUBSCRIBING, FULFILLED, REJECTED };
 
 class Scheduler {
