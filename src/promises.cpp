@@ -68,5 +68,20 @@ int main(int argc, const char** argv) {
         sch->run();
     }
 
+    {
+        auto p1 = promise_type::pending();
+        auto p2 = p1->then([](auto p){
+            assert(p->state() == FULFILLED);
+            return p->value() + 1;
+        });
+        auto p3 = p2->then([](auto p){
+            assert(p->state() == FULFILLED);
+            std::printf("value == %d\n", p->value());
+        });
+        auto sch = SingleThreadedScheduler::dflt();
+        sch->schedule([&](){ p1->fulfill(42); });
+        sch->run();
+    }
+
     return 0;
 }

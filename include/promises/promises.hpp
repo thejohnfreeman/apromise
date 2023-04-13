@@ -15,7 +15,6 @@ namespace promises {
 
 // TODO: Non-template base type for heterogeneous containers,
 // or can we use shared_ptr<void>?
-// TODO: `then` returns another promise pointer.
 
 enum State { PENDING, SUBSCRIBING, FULFILLED, REJECTED };
 
@@ -51,76 +50,136 @@ public:
     }
 };
 
+namespace detail {
+
+struct construct_callbacks {};
+struct construct_value {};
+struct construct_error {};
+
+template <typename C, typename V>
+union Storage {
+    using callback_type = C;
+    using value_type = V;
+    using error_type = std::exception_ptr;
+
+    std::vector<callback_type> callbacks_;
+    value_type value_;
+    error_type error_;
+
+    Storage() : callbacks_{} {}
+
+    template <typename... Args>
+    Storage(construct_value, Args&&... args)
+    : value_(std::forward<Args>(args)...)
+    {}
+
+    // This form was written before landing on the chosen `error_type`.
+    template <typename... Args>
+    Storage(construct_error, Args&&... args)
+    : error_(std::forward<Args>(args)...)
+    {}
+
+    ~Storage() {}
+
+    template <typename... Args>
+    void construct_error(Args&&... args) {
+        std::construct_at(&error_, std::forward<Args>(args)...);
+    }
+
+    template <typename... Args>
+    void construct_value(Args&&... args) {
+        std::construct_at(&value_, std::forward<Args>(args)...);
+    }
+
+    value_type const& get_value() const {
+        return value_;
+    }
+
+    void destroy_value() {
+        std::destroy_at(&value_);
+    }
+};
+
+template <typename C>
+union Storage<C, void> {
+    using callback_type = C;
+    using value_type = void;
+    using error_type = std::exception_ptr;
+
+    std::vector<callback_type> callbacks_;
+    error_type error_;
+
+    Storage() : callbacks_{} {}
+
+    Storage(construct_value) {}
+
+    template <typename... Args>
+    Storage(construct_error, Args&&... args)
+    : error_(std::forward<Args>(args)...)
+    {}
+
+    ~Storage() {}
+
+    template <typename... Args>
+    void construct_error(Args&&... args) {
+        std::construct_at(&error_, std::forward<Args>(args)...);
+    }
+
+    template <typename...>
+    void construct_value() {}
+    void get_value() const {}
+    void destroy_value() {}
+};
+
+}
+
 template <typename V>
 class PROMISES_EXPORT AsyncPromise
 : public std::enable_shared_from_this<AsyncPromise<V>>
 {
 public:
-    using value_type = V;
-    using error_type = std::exception_ptr;
     using pointer_type = std::shared_ptr<AsyncPromise<V>>;
     using callback_type = std::function<void(pointer_type)>;
+    using storage_type = detail::Storage<callback_type, V>;
+    using value_type = typename storage_type::value_type;
+    using error_type = typename storage_type::error_type;
 
 private:
-    struct construct_pending {};
-    struct construct_fulfilled {};
-    struct construct_rejected {};
-
-    union Storage
-    {
-        std::vector<callback_type> callbacks_;
-        value_type value_;
-        error_type error_;
-
-        Storage() : callbacks_{} {}
-
-        template <typename... Args>
-        Storage(construct_fulfilled, Args&&... args)
-        : value_(std::forward<Args>(args)...)
-        {}
-
-        template <typename... Args>
-        Storage(construct_rejected, Args&&... args)
-        : error_(std::forward<Args>(args)...)
-        {}
-
-        ~Storage() {}
-    };
-
     Scheduler* scheduler_ = SingleThreadedScheduler::dflt();
     std::atomic<State> state_;
-    Storage storage_;
+    storage_type storage_;
 
 public:
     AsyncPromise() = delete;
-    AsyncPromise(construct_pending) {}
+    AsyncPromise(detail::construct_callbacks) {}
 
     template <typename... Args>
-    AsyncPromise(construct_fulfilled ctor, Args&&... args)
+    AsyncPromise(detail::construct_value ctor, Args&&... args)
     : state_(FULFILLED)
     , storage_(ctor, std::forward<Args>(args)...)
     {}
 
     template <typename... Args>
-    AsyncPromise(construct_rejected ctor, Args&&... args)
+    AsyncPromise(detail::construct_error ctor, Args&&... args)
     : state_(REJECTED)
     , storage_(ctor, std::forward<Args>(args)...)
     {}
 
     static pointer_type pending() {
-        return std::make_shared<AsyncPromise<V>>(construct_pending{});
+        return std::make_shared<AsyncPromise<V>>(
+                detail::construct_callbacks{});
     }
 
     template <typename... Args>
     static pointer_type fulfilled(Args&&... args) {
         return std::make_shared<AsyncPromise<V>>(
-                construct_fulfilled{}, std::forward<Args>(args)...);
+                detail::construct_value{}, std::forward<Args>(args)...);
     }
 
     template <typename E>
     static pointer_type rejected(E const& error) {
         return std::make_shared<AsyncPromise<V>>(
-                construct_rejected{}, std::make_exception_ptr(error));
+                detail::construct_error{}, std::make_exception_ptr(error));
     }
 
     ~AsyncPromise()
@@ -132,7 +191,7 @@ public:
         }
         else if (status == FULFILLED)
         {
-            std::destroy_at(&storage_.value_);
+            storage_.destroy_value();
         }
         else
         {
@@ -166,9 +225,24 @@ public:
         state_.store(PENDING, std::memory_order_release);
     }
 
-    value_type const& value() const {
+    template <typename F>
+    auto then(F&& f) -> typename AsyncPromise<std::invoke_result_t<F, AsyncPromise::pointer_type>>::pointer_type {
+        using R = std::invoke_result_t<F, AsyncPromise::pointer_type>;
+        auto q = AsyncPromise<R>::pending();
+        auto cb = [q, f = std::move(f)](pointer_type p) {
+            try {
+                q->fulfillWith(std::move(f), std::move(p));
+            } catch (...) {
+                q->reject(std::current_exception());
+            }
+        };
+        subscribe(cb);
+        return q;
+    }
+
+    auto value() const {
         assert(state() == FULFILLED);
-        return storage_.value_;
+        return storage_.get_value();
     }
 
     error_type const& error() const {
@@ -178,17 +252,30 @@ public:
 
     template <typename... Args>
     void fulfill(Args&&... args) {
-        return settle(FULFILLED, &Storage::value_, std::forward<Args>(args)...);
+        return settle(
+                FULFILLED,
+                &storage_type::template construct_value<Args...>,
+                std::forward<Args>(args)...);
     }
 
-    template <typename... Args>
-    void reject(Args&&... args) {
-        return settle(REJECTED, &Storage::error_, std::forward<Args>(args)...);
+    template <typename E>
+    void reject(E&& error) {
+        return reject(std::make_exception_ptr(std::move(error)));
+    }
+
+    void reject(std::exception_ptr error) {
+        return settle(
+                REJECTED,
+                &storage_type::template construct_error<std::exception_ptr>,
+                std::move(error));
     }
 
 private:
-    template <typename T, typename... Args>
-    void settle(State status, T Storage::*member, Args&&... args) {
+    template <typename W>
+    friend class AsyncPromise;
+
+    template <typename M, typename... Args>
+    void settle(State status, M method, Args&&... args) {
         State expected = PENDING;
         while (!state_.compare_exchange_weak(
                     expected, SUBSCRIBING, std::memory_order_acquire))
@@ -197,7 +284,7 @@ private:
         }
         decltype(storage_.callbacks_) callbacks(std::move(storage_.callbacks_));
         std::destroy_at(&storage_.callbacks_);
-        std::construct_at(&(storage_.*member), std::forward<Args>(args)...);
+        (storage_.*method)(std::forward<Args>(args)...);
         state_.store(status, std::memory_order_release);
         for (auto& cb : callbacks) {
             scheduler_->schedule(
@@ -207,6 +294,24 @@ private:
         }
     }
 
+    template <typename F, typename... Args>
+    std::enable_if_t<!std::is_same_v<
+        std::invoke_result_t<F, Args...>,
+        void
+    >>
+    fulfillWith(F&& f, Args&&... args) {
+        fulfill(f(std::move(args)...));
+    }
+
+    template <typename F, typename... Args>
+    std::enable_if_t<std::is_same_v<
+        std::invoke_result_t<F, Args...>,
+        void
+    >>
+    fulfillWith(F&& f, Args&&... args) {
+        f(std::move(args)...);
+        fulfill();
+    }
 };
 
 }
