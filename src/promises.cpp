@@ -99,5 +99,19 @@ int main(int argc, const char** argv) {
         std::printf("value == %f\n", p4->value());
     }
 
+    {
+        auto p1 = factory.pending<int>();
+        auto p2 = factory.pending<int>();
+        auto p3 = factory.apply([](int a, int b){return a + b; }, p1, p2);
+        auto p4 = p3->then([](auto p){
+            std::printf("value == %d\n", p->value());
+        });
+        sch->schedule([&](){ p1->fulfill(1); });
+        sch->run();
+        std::printf("not yet...\n");
+        sch->schedule([&](){ p2->fulfill(2); });
+        sch->run();
+    }
+
     return 0;
 }

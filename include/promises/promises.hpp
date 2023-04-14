@@ -9,9 +9,16 @@
 #include <functional>
 #include <list>
 #include <memory>
+#include <tuple>
 #include <vector>
 
 namespace promises {
+
+template <std::size_t I, typename... Ts>
+struct nth_type : public std::tuple_element<I, std::tuple<Ts...>> {};
+
+template <std::size_t I, typename... Ts>
+using nth_type_t = typename nth_type<I, Ts...>::type;
 
 enum State { PENDING, SUBSCRIBING, FULFILLED, REJECTED };
 
@@ -133,6 +140,89 @@ union Storage<C, void> {
 template <typename V>
 class AsyncPromise;
 
+/** Shared state collecting arguments for a function application. */
+template <typename F, typename... Args>
+struct ApplyState
+: public std::enable_shared_from_this<ApplyState<F, Args...>>
+{
+    using R = std::invoke_result_t<F, Args...>;
+    using output_type = typename AsyncPromise<R>::pointer_type;
+
+    output_type output_;
+    F function_;
+    std::tuple<std::shared_ptr<const Args>...> arguments_;
+    std::atomic<unsigned int> count_ = 0;
+    std::atomic<bool> valid_ = true;
+
+    ApplyState(output_type output, F&& function)
+    : output_(std::move(output))
+    , function_(std::move(function))
+    {}
+
+    template <std::size_t I>
+    void addCallback() {}
+
+    template <std::size_t I, typename Arg, typename... Rest>
+    void addCallback(
+            std::shared_ptr<AsyncPromise<Arg>> arg,
+            Rest&&... rest)
+    {
+        arg->subscribe([self = this->shared_from_this()](auto p) {
+            self->template setArgument<I>(p);
+        });
+        addCallback<I+1>(std::forward<Rest>(rest)...);
+    }
+
+    template <typename... Rest>
+    void addCallbacks(Rest&&... rest) {
+        addCallback<0>(std::forward<Rest>(rest)...);
+    }
+
+    template <std::size_t... I>
+    R invoke(std::index_sequence<I...>) {
+        return std::invoke(std::move(function_), *std::get<I>(arguments_)...);
+    }
+
+    R invoke() {
+        return invoke(std::make_index_sequence<sizeof...(Args)>());
+    }
+
+    template <std::size_t I>
+    void setArgument(std::shared_ptr<void> arg) {
+        using Arg = nth_type_t<I, Args...>;
+        auto p = std::static_pointer_cast<AsyncPromise<Arg>>(std::move(arg));
+        auto state = p->state();
+        if (state == REJECTED) {
+            bool valid = true;
+            if (valid_.compare_exchange_strong(valid, false, std::memory_order_relaxed))
+            {
+                // We are the only writer who invalidated this state.
+                output_->reject(p->error());
+            }
+        } else {
+            assert(state == FULFILLED);
+            std::get<I>(arguments_) = p->value_ptr();
+        }
+        auto count = ++count_;
+        if (count != sizeof...(Args)) {
+            return;
+        }
+        // We are the writer who wrote the final argument.
+        // Every other writer has already had a chance to invalidate.
+        if (!valid_.load(std::memory_order_relaxed)) {
+            return;
+        }
+        output_->factory_.scheduler()->schedule(
+        [self = this->shared_from_this()]() {
+            try {
+                self->output_->fulfill(self->invoke());
+            } catch (...) {
+                self->output_->reject(std::current_exception());
+            }
+        });
+    }
+};
+
 /**
  * An `AsyncPromiseFactory` is just a decorator around a Scheduler that
  * adds no state, just a set of helper functions.
@@ -172,6 +262,23 @@ public:
     template <typename V>
     auto cast(std::shared_ptr<void> p) {
             return std::static_pointer_cast<AsyncPromise<V>>(p);
+    }
+
+    template <typename F, typename... Args>
+    auto apply(F&& function, std::shared_ptr<AsyncPromise<Args>>... args)
+    -> typename AsyncPromise<std::invoke_result_t<F, Args...>>::pointer_type
+    {
+        using R = std::invoke_result_t<F, Args...>;
+        auto output = pending<R>();
+        auto state = std::make_shared<ApplyState<F, Args...>>(
+                output, std::move(function));
+        state->addCallbacks(args...);
+        return output;
+        // All of the inputs now hold callbacks that hold a shared pointer to
+        // the shared state.
+        // We will now release our shared pointer to the shared state.
+        // The last input that destroys its calllback will destroy the shared
+        // state.
     }
 };
 
@@ -256,7 +363,8 @@ public:
     }
 
     template <typename F>
-    auto then(F&& f) -> typename AsyncPromise<std::invoke_result_t<F, AsyncPromise::pointer_type>>::pointer_type {
+    auto then(F&& f)
+    -> typename AsyncPromise<std::invoke_result_t<F, pointer_type>>::pointer_type {
         using R = std::invoke_result_t<F, AsyncPromise::pointer_type>;
         auto q = factory_.pending<R>();
         auto cb = [q, f = std::move(f)](pointer_type p) {
@@ -270,9 +378,13 @@ public:
         return q;
     }
 
-    auto value() const {
+    decltype(auto) value() const {
         assert(state() == FULFILLED);
         return storage_.get_value();
+    }
+
+    auto value_ptr() const {
+        return std::shared_ptr<const value_type>(this->shared_from_this(), &value());
     }
 
     error_type const& error() const {
@@ -303,6 +415,8 @@ public:
 private:
     template <typename W>
     friend class AsyncPromise;
+    template <typename F, typename... Args>
+    friend struct ApplyState;
 
     template <typename M, typename... Args>
     void settle(State status, M method, Args&&... args) {
