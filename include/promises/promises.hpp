@@ -131,6 +131,51 @@ union Storage<C, void> {
 }
 
 template <typename V>
+class AsyncPromise;
+
+/**
+ * An `AsyncPromiseFactory` is just a decorator around a Scheduler that
+ * adds no state, just a set of helper functions.
+ */
+class PROMISES_EXPORT AsyncPromiseFactory {
+private:
+    using job_type = Scheduler::job_type;
+    Scheduler* scheduler_;
+
+public:
+    AsyncPromiseFactory(Scheduler* scheduler)
+    : scheduler_(scheduler)
+    {}
+
+    Scheduler* scheduler() const {
+        return scheduler_;
+    }
+
+    template <typename V>
+    auto pending() {
+        return std::make_shared<AsyncPromise<V>>(
+                scheduler_, detail::construct_callbacks{});
+    }
+
+    template <typename V, typename... Args>
+    auto fulfilled(Args&&... args) {
+        return std::make_shared<AsyncPromise<V>>(
+                scheduler_, detail::construct_value{}, std::forward<Args>(args)...);
+    }
+
+    template <typename V, typename E>
+    auto rejected(E const& error) {
+        return std::make_shared<AsyncPromise<V>>(
+                scheduler_, detail::construct_error{}, std::make_exception_ptr(error));
+    }
+
+    template <typename V>
+    auto cast(std::shared_ptr<void> p) {
+            return std::static_pointer_cast<AsyncPromise<V>>(p);
+    }
+};
+
+template <typename V>
 class PROMISES_EXPORT AsyncPromise
 : public std::enable_shared_from_this<AsyncPromise<V>>
 {
@@ -142,42 +187,30 @@ public:
     using error_type = typename storage_type::error_type;
 
 private:
-    Scheduler* scheduler_ = SingleThreadedScheduler::dflt();
-    std::atomic<State> state_;
+    AsyncPromiseFactory factory_;
+    std::atomic<State> state_ = PENDING;
     storage_type storage_;
 
 public:
     AsyncPromise() = delete;
-    AsyncPromise(detail::construct_callbacks) {}
+
+    AsyncPromise(Scheduler* scheduler, detail::construct_callbacks)
+    : factory_(scheduler)
+    {}
 
     template <typename... Args>
-    AsyncPromise(detail::construct_value ctor, Args&&... args)
-    : state_(FULFILLED)
+    AsyncPromise(Scheduler* scheduler, detail::construct_value ctor, Args&&... args)
+    : factory_(scheduler)
+    , state_(FULFILLED)
     , storage_(ctor, std::forward<Args>(args)...)
     {}
 
     template <typename... Args>
-    AsyncPromise(detail::construct_error ctor, Args&&... args)
-    : state_(REJECTED)
+    AsyncPromise(Scheduler* scheduler, detail::construct_error ctor, Args&&... args)
+    : factory_(scheduler)
+    , state_(REJECTED)
     , storage_(ctor, std::forward<Args>(args)...)
     {}
-
-    static pointer_type pending() {
-        return std::make_shared<AsyncPromise<V>>(
-                detail::construct_callbacks{});
-    }
-
-    template <typename... Args>
-    static pointer_type fulfilled(Args&&... args) {
-        return std::make_shared<AsyncPromise<V>>(
-                detail::construct_value{}, std::forward<Args>(args)...);
-    }
-
-    template <typename E>
-    static pointer_type rejected(E const& error) {
-        return std::make_shared<AsyncPromise<V>>(
-                detail::construct_error{}, std::make_exception_ptr(error));
-    }
 
     ~AsyncPromise()
     {
@@ -210,7 +243,7 @@ public:
                 continue;
             }
             if (expected != PENDING) {
-                scheduler_->schedule(
+                factory_.scheduler()->schedule(
                     [self = this->shared_from_this(), cb = std::move(cb)] ()
                     { cb(std::move(self)); }
                 );
@@ -225,7 +258,7 @@ public:
     template <typename F>
     auto then(F&& f) -> typename AsyncPromise<std::invoke_result_t<F, AsyncPromise::pointer_type>>::pointer_type {
         using R = std::invoke_result_t<F, AsyncPromise::pointer_type>;
-        auto q = AsyncPromise<R>::pending();
+        auto q = factory_.pending<R>();
         auto cb = [q, f = std::move(f)](pointer_type p) {
             try {
                 q->fulfillWith(std::move(f), std::move(p));
@@ -284,7 +317,7 @@ private:
         (storage_.*method)(std::forward<Args>(args)...);
         state_.store(status, std::memory_order_release);
         for (auto& cb : callbacks) {
-            scheduler_->schedule(
+            factory_.scheduler()->schedule(
                 [self = this->shared_from_this(), cb = std::move(cb)] ()
                 { cb(std::move(self)); }
             );
