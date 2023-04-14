@@ -199,6 +199,7 @@ struct ApplyState
             {
                 // We are the only writer who invalidated this state.
                 output_->reject(p->error());
+                output_.reset();
             }
         } else {
             assert(state == FULFILLED);
