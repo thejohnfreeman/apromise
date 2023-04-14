@@ -9,6 +9,7 @@
 #include <functional>
 #include <list>
 #include <memory>
+#include <stdexcept>
 #include <tuple>
 #include <vector>
 
@@ -376,6 +377,17 @@ public:
         };
         subscribe(cb);
         return q;
+    }
+
+    decltype(auto) get() const {
+        auto status = state();
+        if (status == REJECTED) {
+            std::rethrow_exception(error());
+        }
+        if (status != FULFILLED) {
+            throw std::runtime_error("promise not settled");
+        }
+        return value();
     }
 
     decltype(auto) value() const {
