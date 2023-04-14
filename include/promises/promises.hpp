@@ -349,9 +349,11 @@ public:
                     expected, SUBSCRIBING, std::memory_order_acquire))
         {
             if (expected == SUBSCRIBING) {
+                // Someone else is subscribing. Try again.
                 continue;
             }
             if (expected != PENDING) {
+                // The promise is settled. No longer taking subscribers.
                 factory_.scheduler()->schedule(
                     [self = this->shared_from_this(), cb = std::move(cb)] ()
                     { cb(std::move(self)); }
