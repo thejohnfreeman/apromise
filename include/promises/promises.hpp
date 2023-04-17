@@ -181,7 +181,8 @@ struct ApplyState
 
     template <std::size_t... I>
     R invoke(std::index_sequence<I...>) {
-        return std::invoke(std::move(function_), *std::get<I>(arguments_)...);
+        return std::invoke(
+                std::move(function_), std::move(*std::get<I>(arguments_))...);
     }
 
     R invoke() {
