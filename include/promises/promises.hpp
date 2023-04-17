@@ -225,6 +225,12 @@ struct ApplyState
             } catch (...) {
                 self->output_->reject(std::current_exception());
             }
+            // Normally, this lambda would hold the last reference to the
+            // shared state, and the state would be destroyed as the lambda
+            // exits, but in case someone else is holding a pointer to the
+            // state, we'll release its hold on the output, because it can and
+            // will no longer modify it.
+            self->output_.reset();
         });
     }
 };
