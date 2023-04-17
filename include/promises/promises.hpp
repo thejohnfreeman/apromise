@@ -205,12 +205,15 @@ struct ApplyState
             assert(state == FULFILLED);
             std::get<I>(arguments_) = p->value_ptr();
         }
-        auto count = ++count_;
+        auto count = 1 + count_.fetch_add(1, std::memory_order_acq_rel);
         if (count != sizeof...(Args)) {
             return;
         }
-        // We are the writer who wrote the final argument.
-        // Every other writer has already had a chance to invalidate.
+        // We are the argument writer who wrote the final argument.
+        // Every other argument writer has already passed the call to
+        // `count_.fetch_add`, and the effect of their write to `valid_`, if
+        // any, is visible in this thread because of the acquire-release
+        // synchronization on `count_`.
         if (!valid_.load(std::memory_order_relaxed)) {
             return;
         }
