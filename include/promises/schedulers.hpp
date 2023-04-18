@@ -1,14 +1,13 @@
 #ifndef PROMISES_SCHEDULERS_HPP
 #define PROMISES_SCHEDULERS_HPP
 
-#include <promises/export.hpp>
 #include <promises/promises.hpp>
 
 #include <list>
 
 namespace promises {
 
-class PROMISES_EXPORT SingleThreadedScheduler : public Scheduler {
+class SingleThreadedScheduler : public Scheduler {
 private:
     std::list<job_type> jobs_;
 public:

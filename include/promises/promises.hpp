@@ -1,8 +1,6 @@
 #ifndef PROMISES_HPP
 #define PROMISES_HPP
 
-#include <promises/export.hpp>
-
 #include <atomic>
 #include <cassert>
 #include <exception>
@@ -213,7 +211,7 @@ struct ApplyState
  * An `AsyncPromiseFactory` is just a decorator around a Scheduler that
  * adds no state, just a set of helper functions.
  */
-class PROMISES_EXPORT AsyncPromiseFactory {
+class AsyncPromiseFactory {
 private:
     using job_type = Scheduler::job_type;
     Scheduler* scheduler_;
@@ -269,7 +267,7 @@ public:
 };
 
 template <typename V>
-class PROMISES_EXPORT AsyncPromise
+class AsyncPromise
 : public std::enable_shared_from_this<AsyncPromise<V>>
 {
 public:
