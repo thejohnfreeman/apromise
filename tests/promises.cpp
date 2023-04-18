@@ -1,7 +1,12 @@
+#include <exception>
+#include <memory>
+#include <vector>
+
 #define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
 #include <doctest/doctest.h>
 
 #include <promises/promises.hpp>
+#include <promises/schedulers.hpp>
 
 TEST_CASE("promises") {
     using namespace promises;

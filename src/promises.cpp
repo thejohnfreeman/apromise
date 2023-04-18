@@ -1,9 +1,9 @@
-#include <exception>
-#include <memory>
-#include <promises/promises.hpp>
-
 #include <cstdio>
+#include <functional>
 #include <vector>
+
+#include <promises/promises.hpp>
+#include <promises/schedulers.hpp>
 
 int main(int argc, const char** argv) {
     using namespace promises;
