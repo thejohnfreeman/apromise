@@ -325,6 +325,11 @@ public:
         return state_.load(std::memory_order_acquire);
     }
 
+    bool settled() const {
+        auto status = state();
+        return status == FULFILLED || status == REJECTED;
+    }
+
     void subscribe(callback_type&& cb) {
         State expected = PENDING;
         while (!state_.compare_exchange_weak(
