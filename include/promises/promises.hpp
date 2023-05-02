@@ -18,7 +18,7 @@ struct nth_type : public std::tuple_element<I, std::tuple<Ts...>> {};
 template <std::size_t I, typename... Ts>
 using nth_type_t = typename nth_type<I, Ts...>::type;
 
-enum State { PENDING, SUBSCRIBING, FULFILLED, REJECTED };
+enum State { PENDING, SUBSCRIBING, SETTLING, FULFILLED, REJECTED };
 
 class Scheduler {
 public:
@@ -332,6 +332,7 @@ public:
         {
             if (expected == SUBSCRIBING) {
                 // Someone else is subscribing. Try again.
+                expected = PENDING;
                 continue;
             }
             if (expected != PENDING) {
@@ -390,7 +391,7 @@ public:
     }
 
     template <typename... Args>
-    void fulfill(Args&&... args) {
+    bool fulfill(Args&&... args) {
         return settle(
                 FULFILLED,
                 &storage_type::template construct_value<Args...>,
@@ -398,11 +399,11 @@ public:
     }
 
     template <typename E>
-    void reject(E&& error) {
+    bool reject(E&& error) {
         return reject(std::make_exception_ptr(std::move(error)));
     }
 
-    void reject(std::exception_ptr error) {
+    bool reject(std::exception_ptr error) {
         return settle(
                 REJECTED,
                 &storage_type::template construct_error<std::exception_ptr>,
@@ -416,12 +417,23 @@ private:
     friend struct ApplyState;
 
     template <typename M, typename... Args>
-    void settle(State status, M method, Args&&... args) {
+    bool settle(State status, M method, Args&&... args) {
         State expected = PENDING;
+        // We cannot transition directly to `status`
+        // because we do not want any threads reading the value or error
+        // until it is constructed.
         while (!state_.compare_exchange_weak(
-                    expected, SUBSCRIBING, std::memory_order_acquire))
+                    expected, SETTLING, std::memory_order_acquire))
         {
-            expected = PENDING;
+            if (expected == SUBSCRIBING) {
+                // Someone else is subscribing. Try again.
+                expected = PENDING;
+                continue;
+            }
+            if (expected != PENDING) {
+                // The promise is settled.
+                return false;
+            }
         }
         decltype(storage_.callbacks_) callbacks(std::move(storage_.callbacks_));
         std::destroy_at(&storage_.callbacks_);
@@ -433,25 +445,26 @@ private:
                 { cb(std::move(self)); }
             );
         }
+        return true;
     }
 
     template <typename F, typename... Args>
     std::enable_if_t<!std::is_same_v<
         std::invoke_result_t<F, Args...>,
         void
-    >>
+    >, bool>
     fulfillWith(F&& f, Args&&... args) {
-        fulfill(f(std::move(args)...));
+        return fulfill(f(std::move(args)...));
     }
 
     template <typename F, typename... Args>
     std::enable_if_t<std::is_same_v<
         std::invoke_result_t<F, Args...>,
         void
-    >>
+    >, bool>
     fulfillWith(F&& f, Args&&... args) {
         f(std::move(args)...);
-        fulfill();
+        return fulfill();
     }
 };
 
