@@ -18,7 +18,7 @@ struct nth_type : public std::tuple_element<I, std::tuple<Ts...>> {};
 template <std::size_t I, typename... Ts>
 using nth_type_t = typename nth_type<I, Ts...>::type;
 
-enum State { PENDING, SUBSCRIBING, SETTLING, FULFILLED, REJECTED };
+enum State { PENDING, SUBSCRIBING, LOCKED, SETTLING, FULFILLED, REJECTED };
 
 class Scheduler {
 public:
@@ -330,6 +330,24 @@ public:
         return status == FULFILLED || status == REJECTED;
     }
 
+    bool lock() {
+        State expected = PENDING;
+        while (!state_.compare_exchange_weak(
+                    expected, LOCKED, std::memory_order_acquire))
+        {
+            if (expected == SUBSCRIBING) {
+                // Someone else is subscribing. Try again.
+                expected = PENDING;
+                continue;
+            }
+            if (expected != PENDING) {
+                // The promise is settled.
+                return false;
+            }
+        }
+        return true;
+    }
+
     void subscribe(callback_type&& cb) {
         State expected = PENDING;
         while (!state_.compare_exchange_weak(
@@ -433,6 +451,11 @@ private:
             if (expected == SUBSCRIBING) {
                 // Someone else is subscribing. Try again.
                 expected = PENDING;
+                continue;
+            }
+            if (expected == LOCKED) {
+                // Only one thread will ever settle.
+                // One more time through the loop.
                 continue;
             }
             if (expected != PENDING) {

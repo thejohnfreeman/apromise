@@ -26,6 +26,20 @@ TEST_CASE("promises") {
         // https://github.com/doctest/doctest/discussions/769
     }
 
+    SUBCASE("pending -> locked -> fulfilled")
+    {
+        auto p1 = factory.pending<int>();
+        p1->subscribe([](auto p){
+            REQUIRE(p->state() == FULFILLED);
+            CHECK(p->value() == 42);
+        });
+        sch->schedule([&](){
+            REQUIRE(p1->lock());
+            p1->fulfill(42);
+        });
+        sch->run();
+    }
+
     SUBCASE("immediately fulfilled")
     {
         auto p1 = factory.fulfilled<int>('c');
