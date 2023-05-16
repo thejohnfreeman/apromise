@@ -21,8 +21,8 @@ TEST_CASE("promises") {
             REQUIRE(p->state() == FULFILLED);
             CHECK(p->value() == 42);
         });
-        sch->schedule([&](){ p1->fulfill(42); });
-        sch->run();
+        sch.schedule([&](){ p1->fulfill(42); });
+        sch.run();
         // https://github.com/doctest/doctest/discussions/769
     }
 
@@ -33,11 +33,11 @@ TEST_CASE("promises") {
             REQUIRE(p->state() == FULFILLED);
             CHECK(p->value() == 42);
         });
-        sch->schedule([&](){
+        sch.schedule([&](){
             REQUIRE(p1->lock());
             p1->fulfill(42);
         });
-        sch->run();
+        sch.run();
     }
 
     SUBCASE("immediately fulfilled")
@@ -47,7 +47,7 @@ TEST_CASE("promises") {
             REQUIRE(p->state() == FULFILLED);
             CHECK(p->value() == 'c');
         });
-        sch->run();
+        sch.run();
     }
 
     SUBCASE("immediately rejected")
@@ -62,7 +62,7 @@ TEST_CASE("promises") {
                 CHECK(error.what() == std::string("hello, world!"));
             }
         });
-        sch->run();
+        sch.run();
     }
 
     SUBCASE("then")
@@ -76,8 +76,8 @@ TEST_CASE("promises") {
             REQUIRE(p->state() == FULFILLED);
             CHECK(p->value() == 43);
         });
-        sch->schedule([&](){ p1->fulfill(42); });
-        sch->run();
+        sch.schedule([&](){ p1->fulfill(42); });
+        sch.run();
     }
 
     SUBCASE("homogeneous container + cast")
@@ -107,9 +107,9 @@ TEST_CASE("promises") {
             REQUIRE(p->state() == FULFILLED);
             CHECK(p->value() == 3);
         });
-        sch->schedule([&](){ p1->fulfill(1); });
-        sch->schedule([&](){ p2->fulfill(2); });
-        sch->run();
+        sch.schedule([&](){ p1->fulfill(1); });
+        sch.schedule([&](){ p2->fulfill(2); });
+        sch.run();
     }
 
 }

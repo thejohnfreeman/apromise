@@ -11,9 +11,9 @@ class SingleThreadedScheduler : public Scheduler {
 private:
     std::list<job_type> jobs_;
 public:
-    static SingleThreadedScheduler* dflt() {
+    static SingleThreadedScheduler& dflt() {
         thread_local SingleThreadedScheduler scheduler;
-        return &scheduler;
+        return scheduler;
     }
 
     void run() {

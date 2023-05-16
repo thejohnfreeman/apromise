@@ -190,7 +190,7 @@ struct ApplyState
         if (!valid_.load(std::memory_order_relaxed)) {
             return;
         }
-        output_->factory_.scheduler()->schedule(
+        output_->factory_.scheduler().schedule(
         [self = this->shared_from_this()]() {
             try {
                 self->output_->fulfill(self->invoke());
@@ -214,14 +214,14 @@ struct ApplyState
 class AsyncPromiseFactory {
 private:
     using job_type = Scheduler::job_type;
-    Scheduler* scheduler_;
+    Scheduler& scheduler_;
 
 public:
-    AsyncPromiseFactory(Scheduler* scheduler)
+    AsyncPromiseFactory(Scheduler& scheduler)
     : scheduler_(scheduler)
     {}
 
-    Scheduler* scheduler() const {
+    Scheduler& scheduler() const {
         return scheduler_;
     }
 
@@ -272,7 +272,7 @@ class AsyncPromise
 {
 public:
     using pointer_type = std::shared_ptr<AsyncPromise<V>>;
-    using callback_type = std::function<void(pointer_type)>;
+    using callback_type = std::function<void(pointer_type const&)>;
     using storage_type = detail::Storage<callback_type, V>;
     using value_type = typename storage_type::value_type;
     using error_type = typename storage_type::error_type;
@@ -285,19 +285,19 @@ private:
 public:
     AsyncPromise() = delete;
 
-    AsyncPromise(Scheduler* scheduler, detail::construct_callbacks)
+    AsyncPromise(Scheduler& scheduler, detail::construct_callbacks)
     : factory_(scheduler)
     {}
 
     template <typename... Args>
-    AsyncPromise(Scheduler* scheduler, detail::construct_value ctor, Args&&... args)
+    AsyncPromise(Scheduler& scheduler, detail::construct_value ctor, Args&&... args)
     : factory_(scheduler)
     , state_(FULFILLED)
     , storage_(ctor, std::forward<Args>(args)...)
     {}
 
     template <typename... Args>
-    AsyncPromise(Scheduler* scheduler, detail::construct_error ctor, Args&&... args)
+    AsyncPromise(Scheduler& scheduler, detail::construct_error ctor, Args&&... args)
     : factory_(scheduler)
     , state_(REJECTED)
     , storage_(ctor, std::forward<Args>(args)...)
@@ -360,7 +360,7 @@ public:
             }
             if (expected != PENDING) {
                 // The promise is settled. No longer taking subscribers.
-                factory_.scheduler()->schedule(
+                factory_.scheduler().schedule(
                     [self = this->shared_from_this(), cb = std::move(cb)] ()
                     { cb(std::move(self)); }
                 );
@@ -468,7 +468,7 @@ private:
         (storage_.*method)(std::forward<Args>(args)...);
         state_.store(status, std::memory_order_release);
         for (auto& cb : callbacks) {
-            factory_.scheduler()->schedule(
+            factory_.scheduler().schedule(
                 [self = this->shared_from_this(), cb = std::move(cb)] ()
                 { cb(std::move(self)); }
             );
