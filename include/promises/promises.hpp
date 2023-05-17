@@ -18,7 +18,25 @@ struct nth_type : public std::tuple_element<I, std::tuple<Ts...>> {};
 template <std::size_t I, typename... Ts>
 using nth_type_t = typename nth_type<I, Ts...>::type;
 
-enum State { PENDING, SUBSCRIBING, LOCKED, SETTLING, FULFILLED, REJECTED };
+enum State {
+    // INITIAL STATE
+    // The promise is waiting to transition to an intermediate or terminal state.
+    PENDING,
+
+    // INTERMEDIATE STATES
+    // A thread is writing.
+    WRITING,
+    // A thread has indicated that it will settle the promise.
+    LOCKED,
+
+    // TERMINAL STATES
+    // The promise has been linked to another.
+    LINKED,
+    // The promise has been settled with a value.
+    FULFILLED,
+    // The promise has been settled with an error.
+    REJECTED,
+};
 
 class Scheduler {
 public:
@@ -59,13 +77,14 @@ struct Value<void> {
     void destroy() {}
 };
 
-template <typename C, typename V>
+template <typename T, typename C, typename V>
 union Storage {
     using callback_type = C;
     using value_type = V;
     using error_type = std::exception_ptr;
 
     std::vector<callback_type> callbacks_;
+    std::shared_ptr<T> link_;
     Value<value_type> value_;
     error_type error_;
 
@@ -268,7 +287,7 @@ class AsyncPromise
 public:
     using pointer_type = std::shared_ptr<AsyncPromise<V>>;
     using callback_type = std::function<void(pointer_type const&)>;
-    using storage_type = detail::Storage<callback_type, V>;
+    using storage_type = detail::Storage<AsyncPromise<V>, callback_type, V>;
     using value_type = typename storage_type::value_type;
     using error_type = typename storage_type::error_type;
 
@@ -305,6 +324,9 @@ public:
         {
             std::destroy_at(&storage_.callbacks_);
         }
+        else if (status == LINKED) {
+            std::destroy_at(&storage_.link_);
+        }
         else if (status == FULFILLED)
         {
             storage_.destroy_value();
@@ -321,50 +343,31 @@ public:
     }
 
     bool settled() const {
-        auto status = state();
+        auto self = follow();
+        auto status = self->state();
         return status == FULFILLED || status == REJECTED;
     }
 
     bool lock() {
-        State expected = PENDING;
-        while (!state_.compare_exchange_weak(
-                    expected, LOCKED, std::memory_order_acquire))
-        {
-            if (expected == SUBSCRIBING) {
-                // Someone else is subscribing. Try again.
-                expected = PENDING;
-                continue;
-            }
-            if (expected != PENDING) {
-                // The promise is settled.
-                return false;
-            }
-        }
-        return true;
+        auto self = this;
+        State previous = transition_(self, LOCKED);
+        return previous == PENDING;
     }
 
     void subscribe(callback_type&& cb) {
-        State expected = PENDING;
-        while (!state_.compare_exchange_weak(
-                    expected, SUBSCRIBING, std::memory_order_acquire))
-        {
-            if (expected == SUBSCRIBING) {
-                // Someone else is subscribing. Try again.
-                expected = PENDING;
-                continue;
-            }
-            if (expected != PENDING) {
-                // The promise is settled. No longer taking subscribers.
-                factory_.scheduler().schedule(
-                    [self = this->shared_from_this(), cb = std::move(cb)] ()
-                    { cb(std::move(self)); }
-                );
-                return;
-            }
+        auto self = this;
+        State previous = transition_(self, WRITING);
+        if (previous != PENDING && previous != LOCKED) {
+            // The promise is settled. No longer taking subscribers.
+            self->factory_.scheduler().schedule(
+                [self = self->shared_from_this(), cb = std::move(cb)] () {
+                    cb(std::move(self));
+                }
+            );
+            return;
         }
-        assert(expected == PENDING);
-        storage_.callbacks_.push_back(std::move(cb));
-        state_.store(PENDING, std::memory_order_release);
+        self->storage_.callbacks_.push_back(std::move(cb));
+        self->state_.store(previous, std::memory_order_release);
     }
 
     template <typename F>
@@ -384,28 +387,33 @@ public:
     }
 
     decltype(auto) get() const {
-        auto status = state();
+        auto self = follow();
+        auto status = self->state();
         if (status == REJECTED) {
-            std::rethrow_exception(error());
+            std::rethrow_exception(self->error_());
         }
         if (status != FULFILLED) {
             throw std::runtime_error("promise not settled");
         }
-        return value();
+        return self->value_();
     }
 
     decltype(auto) value() const {
-        assert(state() == FULFILLED);
-        return storage_.get_value();
+        auto self = follow();
+        assert(self->state() == FULFILLED);
+        return self->value_();
     }
 
     auto value_ptr() const {
-        return std::shared_ptr<const value_type>(this->shared_from_this(), &value());
+        auto self = follow();
+        return std::shared_ptr<const value_type>(
+                self->shared_from_this(), &self->value_());
     }
 
     error_type const& error() const {
-        assert(state() == REJECTED);
-        return storage_.error_;
+        auto self = follow();
+        assert(self->state() == REJECTED);
+        return self->error_();
     }
 
     template <typename... Args>
@@ -434,37 +442,85 @@ private:
     template <typename F, typename... Args>
     friend struct ApplyState;
 
-    template <typename M, typename... Args>
-    bool settle(State status, M method, Args&&... args) {
-        State expected = PENDING;
-        // We cannot transition directly to `status`
-        // because we do not want any threads reading the value or error
-        // until it is constructed.
-        while (!state_.compare_exchange_weak(
-                    expected, SETTLING, std::memory_order_acquire))
+    AsyncPromise const* follow() const {
+        auto p = this;
+        while (p->state() == LINKED) {
+            p = p->storage_.link_.get();
+        }
+        return p;
+    }
+
+    AsyncPromise* follow() {
+        auto p = this;
+        while (p->state() == LINKED) {
+            p = p->storage_.link_.get();
+        }
+        return p;
+    }
+
+    decltype(auto) value_() const {
+        return storage_.get_value();
+    }
+
+    error_type const& error_() const {
+        return storage_.error_;
+    }
+
+    /**
+     * @return `PENDING` or `LOCKED` if the transition succeeded.
+     * Otherwise, whatever state prevented the transition
+     * from ever succeeding, one of `FULFILLED` or `REJECTED`
+     * (or `LOCKED` only if `desired == LOCKED`).
+     * Will never be `WRITING` or `LINKED`.
+     */
+    friend
+    State transition_(AsyncPromise*& self, State desired) {
+        State idle = PENDING;
+        State expected = idle;
+        while (!self->state_.compare_exchange_weak(
+                    expected, desired, std::memory_order_acquire))
         {
-            if (expected == SUBSCRIBING) {
-                // Someone else is subscribing. Try again.
-                expected = PENDING;
+            if (expected == WRITING) {
+                // Another thread is writing. Try again.
+                expected = idle;
                 continue;
             }
-            if (expected == LOCKED) {
-                // Only one thread will ever settle.
+            if (expected == LINKED) {
+                // Follow the link and try again.
+                self = self->storage_.link_.get();
+                expected = idle;
+                continue;
+            }
+            if (expected == LOCKED && desired != LOCKED) {
+                // `LOCKED` is the idle state.
+                idle = LOCKED;
                 // One more time through the loop.
                 continue;
             }
-            if (expected != PENDING) {
-                // The promise is settled.
-                return false;
-            }
+            break;
         }
-        decltype(storage_.callbacks_) callbacks(std::move(storage_.callbacks_));
-        std::destroy_at(&storage_.callbacks_);
-        (storage_.*method)(std::forward<Args>(args)...);
-        state_.store(status, std::memory_order_release);
+        return expected;
+    }
+
+    template <typename M, typename... Args>
+    bool settle(State status, M method, Args&&... args) {
+        auto self = this;
+        // We cannot transition directly to `status`
+        // because we do not want any threads reading the value or error
+        // until it is constructed.
+        State previous = transition_(self, WRITING);
+        if (previous != PENDING && previous != LOCKED) {
+            // This should be unreachable.
+            // Only one thread should ever call `settle`.
+            return false;
+        }
+        decltype(storage_.callbacks_) callbacks(std::move(self->storage_.callbacks_));
+        std::destroy_at(&self->storage_.callbacks_);
+        (self->storage_.*method)(std::forward<Args>(args)...);
+        self->state_.store(status, std::memory_order_release);
         for (auto& cb : callbacks) {
-            factory_.scheduler().schedule(
-                [self = this->shared_from_this(), cb = std::move(cb)] ()
+            self->factory_.scheduler().schedule(
+                [self = self->shared_from_this(), cb = std::move(cb)] ()
                 { cb(std::move(self)); }
             );
         }
