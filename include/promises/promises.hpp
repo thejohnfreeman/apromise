@@ -72,6 +72,10 @@ struct Value {
         return value_;
     }
 
+    T& get() {
+        return value_;
+    }
+
     void destroy() {
         std::destroy_at(&value_);
     }
@@ -122,6 +126,10 @@ union Storage {
     }
 
     decltype(auto) get_value() const {
+        return value_.get();
+    }
+
+    decltype(auto) get_value() {
         return value_.get();
     }
 
@@ -471,7 +479,7 @@ public:
         return q;
     }
 
-    decltype(auto) get() const {
+    decltype(auto) reify() const {
         auto self = follow();
         auto status = self->state();
         if (status == REJECTED) {
@@ -489,13 +497,31 @@ public:
         return self->value_();
     }
 
-    auto value_ptr() const {
+    decltype(auto) value() {
+        auto self = follow();
+        assert(self->state() == FULFILLED);
+        return self->value_();
+    }
+
+    decltype(auto) value_ptr() const {
         auto self = follow();
         return std::shared_ptr<const value_type>(
                 self->shared_from_this(), &self->value_());
     }
 
+    decltype(auto) value_ptr() {
+        auto self = follow();
+        return std::shared_ptr<value_type>(
+                self->shared_from_this(), &self->value_());
+    }
+
     error_type const& error() const {
+        auto self = follow();
+        assert(self->state() == REJECTED);
+        return self->error_();
+    }
+
+    error_type& error() {
         auto self = follow();
         assert(self->state() == REJECTED);
         return self->error_();
@@ -547,7 +573,15 @@ private:
         return storage_.get_value();
     }
 
+    decltype(auto) value_() {
+        return storage_.get_value();
+    }
+
     error_type const& error_() const {
+        return storage_.error_;
+    }
+
+    error_type& error_() {
         return storage_.error_;
     }
 
