@@ -112,4 +112,76 @@ TEST_CASE("promises") {
         sch.run();
     }
 
+    SUBCASE("subscribe head -> link -> settle tail")
+    {
+        bool called = false;
+        auto head = factory.pending<int>();
+        auto tail = factory.pending<int>();
+        head->subscribe([&called](auto const& p) {
+            REQUIRE(p->state() == FULFILLED);
+            CHECK(p->value() == 42);
+            called = true;
+        });
+        tail->link(head);
+        REQUIRE(head->state() == LINKED);
+        sch.schedule([&](){ tail->fulfill(42); });
+        sch.run();
+        REQUIRE(head->value() == 42);
+        REQUIRE(called);
+    }
+
+    SUBCASE("link -> subscribe head -> settle tail")
+    {
+        bool called = false;
+        auto head = factory.pending<int>();
+        auto tail = factory.pending<int>();
+        tail->link(head);
+        REQUIRE(head->state() == LINKED);
+        head->subscribe([&called](auto const& p) {
+            REQUIRE(p->state() == FULFILLED);
+            CHECK(p->value() == 42);
+            called = true;
+        });
+        sch.schedule([&](){ tail->fulfill(42); });
+        sch.run();
+        REQUIRE(head->value() == 42);
+        REQUIRE(called);
+    }
+
+    SUBCASE("subscribe tail -> link -> settle head")
+    {
+        bool called = false;
+        auto head = factory.pending<int>();
+        auto tail = factory.pending<int>();
+        tail->subscribe([&called](auto const& p) {
+            REQUIRE(p->state() == FULFILLED);
+            CHECK(p->value() == 42);
+            called = true;
+        });
+        tail->link(head);
+        REQUIRE(head->state() == LINKED);
+        sch.schedule([&](){ head->fulfill(42); });
+        sch.run();
+        REQUIRE(tail->value() == 42);
+        REQUIRE(called);
+    }
+
+    SUBCASE("link -> subscribe tail -> settle head")
+    {
+        bool called = false;
+        auto head = factory.pending<int>();
+        auto tail = factory.pending<int>();
+        tail->link(head);
+        REQUIRE(head->state() == LINKED);
+        tail->subscribe([&called](auto const& p) {
+            REQUIRE(p->state() == FULFILLED);
+            CHECK(p->value() == 42);
+            called = true;
+        });
+        sch.schedule([&](){ head->fulfill(42); });
+        sch.run();
+        REQUIRE(tail->value() == 42);
+        REQUIRE(called);
+    }
+
 }
