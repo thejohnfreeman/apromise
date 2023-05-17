@@ -203,4 +203,20 @@ TEST_CASE("promises") {
         CHECK(p1->error() == nullptr);
     }
 
+    SUBCASE("then() a callback that returns a promise")
+    {
+        auto p1 = factory.pending<int>();
+        auto p2 = p1->then([&factory](auto const& p){
+            REQUIRE(p->state() == FULFILLED);
+            return factory.fulfilled<int>(p->value() + 1);
+        });
+        auto p3 = p2->then([](auto const& p){
+            REQUIRE(p->state() == FULFILLED);
+            CHECK(p->value() == 43);
+        });
+        sch.schedule([&](){ p1->fulfill(42); });
+        sch.run();
+        CHECK(p2->value() == 43);
+    }
+
 }

@@ -373,7 +373,7 @@ public:
         return previous == PENDING;
     }
 
-    bool link(pointer_type& rhs) {
+    bool link(pointer_type const& rhs) {
         return link(rhs.get());
     }
 
