@@ -130,6 +130,9 @@ union Storage {
     }
 };
 
+template <typename T>
+struct Fulfiller;
+
 }
 
 template <typename V>
@@ -362,7 +365,7 @@ public:
         return previous == PENDING;
     }
 
-    void link(pointer_type& rhs) {
+    bool link(pointer_type& rhs) {
         return link(rhs.get());
     }
 
@@ -376,7 +379,7 @@ public:
      * indicate that a thread will settle or has settled the promise,
      * and it is impossible to link two promises that are both non-`PENDING`.
      */
-    void link(AsyncPromise* rhs) {
+    bool link(AsyncPromise* rhs) {
         auto lhs = this;
         // Typically, we expect `rhs` to be (a) fresh with no callbacks and
         // (b) the one that will be settled.
@@ -386,7 +389,16 @@ public:
         if (rprev != PENDING) {
             // `rhs` is settled or locked.
             // `lhs` must be pending.
-            assert(lprev == PENDING);
+            if (lprev != PENDING) {
+                // This should be unreachable, but we can recover.
+                if (rprev == LOCKED) {
+                    rhs->state_.store(LOCKED, std::memory_order_release);
+                }
+                if (lprev == LOCKED) {
+                    lhs->state_.store(LOCKED, std::memory_order_release);
+                }
+                return false;
+            }
             std::swap(lhs, rhs);
             std::swap(lprev, rprev);
         }
@@ -423,6 +435,8 @@ public:
                 );
             }
         }
+
+        return true;
     }
 
     void subscribe(callback_type&& cb) {
@@ -442,13 +456,13 @@ public:
     }
 
     template <typename F>
-    auto then(F&& f)
-    -> typename AsyncPromise<std::invoke_result_t<F, pointer_type>>::pointer_type {
+    decltype(auto) then(F&& f) {
         using R = std::invoke_result_t<F, AsyncPromise::pointer_type>;
-        auto q = factory_.pending<R>();
-        auto cb = [q, f = std::move(f)](pointer_type p) {
+        using Fulfiller = detail::Fulfiller<R>;
+        auto q = factory_.pending<typename Fulfiller::value_type>();
+        auto cb = [q, f = std::move(f)](pointer_type const& p) mutable {
             try {
-                q->fulfillWith(std::move(f), std::move(p));
+                Fulfiller{q}.fulfillWith(std::move(f), std::move(p));
             } catch (...) {
                 q->reject(std::current_exception());
             }
@@ -598,26 +612,51 @@ private:
         }
         return true;
     }
+};
+
+template <typename T>
+using FuturePtr = std::shared_ptr<AsyncPromise<T>>;
+
+namespace detail {
+
+template <typename T>
+struct Fulfiller {
+    using value_type = T;
+
+    FuturePtr<value_type>& output_;
 
     template <typename F, typename... Args>
-    std::enable_if_t<!std::is_same_v<
-        std::invoke_result_t<F, Args...>,
-        void
-    >, bool>
-    fulfillWith(F&& f, Args&&... args) {
-        return fulfill(f(std::move(args)...));
-    }
-
-    template <typename F, typename... Args>
-    std::enable_if_t<std::is_same_v<
-        std::invoke_result_t<F, Args...>,
-        void
-    >, bool>
-    fulfillWith(F&& f, Args&&... args) {
-        f(std::move(args)...);
-        return fulfill();
+    bool fulfillWith(F&& f, Args&&... args) {
+        return output_->fulfill(f(std::forward<Args>(args)...));
     }
 };
+
+template <>
+struct Fulfiller<void> {
+    using value_type = void;
+
+    FuturePtr<value_type>& output_;
+
+    template <typename F, typename... Args>
+    bool fulfillWith(F&& f, Args&&... args) {
+        f(std::forward<Args>(args)...);
+        return output_->fulfill();
+    }
+};
+
+template <typename T>
+struct Fulfiller<FuturePtr<T>> {
+    using value_type = T;
+
+    FuturePtr<value_type>& output_;
+
+    template <typename F, typename... Args>
+    bool fulfillWith(F&& f, Args&&... args) {
+        return output_->link(f(std::forward<Args>(args)...));
+    }
+};
+
+}
 
 }
 
