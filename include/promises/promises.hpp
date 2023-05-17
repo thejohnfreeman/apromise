@@ -19,17 +19,25 @@ template <std::size_t I, typename... Ts>
 using nth_type_t = typename nth_type<I, Ts...>::type;
 
 enum State {
-    // INITIAL STATE
-    // The promise is waiting to transition to an intermediate or terminal state.
-    PENDING,
+    // IDLE STATES
+    // In an idle state, the promise is waiting to transition to a terminal
+    // state. It holds callbacks in its storage.
 
-    // INTERMEDIATE STATES
-    // A thread is writing.
-    WRITING,
+    // The initial idle state.
+    PENDING,
     // A thread has indicated that it will settle the promise.
+    // The promise may never transition back to the `PENDING` state.
     LOCKED,
 
+    // LOCKED STATE
+    // In the locked state, a thread is writing the storage.
+    // No other thread may read or write the storage.
+    WRITING,
+
     // TERMINAL STATES
+    // In a terminal state, the promise will never change states again.
+    // Its storage will never be written again, except by the destructor.
+
     // The promise has been linked to another.
     LINKED,
     // The promise has been settled with a value.
