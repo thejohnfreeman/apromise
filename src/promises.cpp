@@ -23,7 +23,7 @@ int main(int argc, const char** argv) {
             sizeof(std::enable_shared_from_this<void>));
     std::printf("sizeof(promise) == %lu\n", sizeof(promise_type));
 
-    auto sch = SingleThreadedScheduler::dflt();
+    decltype(auto) sch = SingleThreadedScheduler::dflt();
     auto factory = AsyncPromiseFactory(sch);
 
     {
@@ -33,11 +33,11 @@ int main(int argc, const char** argv) {
         auto p4 = p3->then([](auto p){
             std::printf("value == %d\n", p->value());
         });
-        sch->schedule([&](){ p1->fulfill(1); });
-        sch->run();
+        sch.schedule([&](){ p1->fulfill(1); });
+        sch.run();
         std::printf("not yet...\n");
-        sch->schedule([&](){ p2->fulfill(2); });
-        sch->run();
+        sch.schedule([&](){ p2->fulfill(2); });
+        sch.run();
     }
 
     return 0;

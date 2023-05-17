@@ -33,6 +33,32 @@ struct construct_callbacks {};
 struct construct_value {};
 struct construct_error {};
 
+template <typename T>
+struct Value {
+    T value_;
+
+    template <typename... Args>
+    void construct(Args&&... args) {
+        std::construct_at(&value_, std::forward<Args>(args)...);
+    }
+
+    T const& get() const {
+        return value_;
+    }
+
+    void destroy() {
+        std::destroy_at(&value_);
+    }
+};
+
+template <>
+struct Value<void> {
+    template <typename...>
+    void construct() {}
+    void get() const {}
+    void destroy() {}
+};
+
 template <typename C, typename V>
 union Storage {
     using callback_type = C;
@@ -40,14 +66,14 @@ union Storage {
     using error_type = std::exception_ptr;
 
     std::vector<callback_type> callbacks_;
-    value_type value_;
+    Value<value_type> value_;
     error_type error_;
 
     Storage() : callbacks_{} {}
 
     template <typename... Args>
     Storage(construct_value, Args&&... args)
-    : value_(std::forward<Args>(args)...)
+    : value_{std::forward<Args>(args)...}
     {}
 
     // This form was written before landing on the chosen `error_type`.
@@ -65,47 +91,16 @@ union Storage {
 
     template <typename... Args>
     void construct_value(Args&&... args) {
-        std::construct_at(&value_, std::forward<Args>(args)...);
+        value_.construct(std::forward<Args>(args)...);
     }
 
-    value_type const& get_value() const {
-        return value_;
+    decltype(auto) get_value() const {
+        return value_.get();
     }
 
     void destroy_value() {
-        std::destroy_at(&value_);
+        value_.destroy();
     }
-};
-
-template <typename C>
-union Storage<C, void> {
-    using callback_type = C;
-    using value_type = void;
-    using error_type = std::exception_ptr;
-
-    std::vector<callback_type> callbacks_;
-    error_type error_;
-
-    Storage() : callbacks_{} {}
-
-    Storage(construct_value) {}
-
-    template <typename... Args>
-    Storage(construct_error, Args&&... args)
-    : error_(std::forward<Args>(args)...)
-    {}
-
-    ~Storage() {}
-
-    template <typename... Args>
-    void construct_error(Args&&... args) {
-        std::construct_at(&error_, std::forward<Args>(args)...);
-    }
-
-    template <typename...>
-    void construct_value() {}
-    void get_value() const {}
-    void destroy_value() {}
 };
 
 }
