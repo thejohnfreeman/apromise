@@ -354,6 +354,69 @@ public:
         return previous == PENDING;
     }
 
+    void link(pointer_type& rhs) {
+        return link(rhs.get());
+    }
+
+    /**
+     * For this explanation, consider only the observable states
+     * (i.e. those returned by `transition_`):
+     * `PENDING`, `LOCKED`, `FULFILLED`, and `REJECTED`.
+     * One of the two halves of a link _must_ be in the `PENDING` state and
+     * _must never_ transition to a non-`PENDING` state.
+     * The other observable states (`LOCKED`, `FULFILLED`, and `REJECTED`)
+     * indicate that a thread will settle or has settled the promise,
+     * and it is impossible to link two promises that are both non-`PENDING`.
+     */
+    void link(AsyncPromise* rhs) {
+        auto lhs = this;
+        // Typically, we expect `rhs` to be (a) fresh with no callbacks and
+        // (b) the one that will be settled.
+        // Thus, we first try to link `rhs` to `lhs`.
+        auto rprev = transition_(rhs, WRITING);
+        auto lprev = transition_(lhs, WRITING);
+        if (rprev != PENDING) {
+            // `rhs` is settled or locked.
+            // `lhs` must be pending.
+            assert(lprev == PENDING);
+            std::swap(lhs, rhs);
+            std::swap(lprev, rprev);
+        }
+        // For the rest of the function,
+        // we can assume that `rhs` was `PENDING` and is now `WRITING`.
+        // We need to reap callbacks from `rhs`, link it to `lhs`,
+        // and change its state to `LINKED`.
+        // `lhs` may be `WRITING` and its previous state is in `lprev`.
+        // If it was not settled (i.e. if it was pending or locked),
+        // then its state is now `WRITING`,
+        // and we need to add callbacks from `rhs`
+        // and restore its previous state.
+        // If it was settled,
+        // then its state is unchanged,
+        // and we need to schedule callbacks from `rhs`,
+        // passing to them `lhs`.
+
+        // Reap the callbacks from `rhs`.
+        decltype(storage_.callbacks_) callbacks(std::move(rhs->storage_.callbacks_));
+        std::destroy_at(&rhs->storage_.callbacks_);
+        // Make `rhs` link to `lhs`.
+        std::construct_at(&rhs->storage_.link_, lhs->shared_from_this());
+        rhs->state_.store(LINKED, std::memory_order_release);
+
+        if (lprev == PENDING || lprev == LOCKED) {
+            std::move(callbacks.begin(), callbacks.end(), std::back_inserter(lhs->storage_.callbacks_));
+            lhs->state_.store(lprev, std::memory_order_release);
+        } else {
+            for (auto& cb : callbacks) {
+                lhs->factory_.scheduler().schedule(
+                    [self = lhs->shared_from_this(), cb = std::move(cb)] () {
+                        cb(std::move(self));
+                    }
+                );
+            }
+        }
+    }
+
     void subscribe(callback_type&& cb) {
         auto self = this;
         State previous = transition_(self, WRITING);
@@ -492,7 +555,8 @@ private:
                 continue;
             }
             if (expected == LOCKED && desired != LOCKED) {
-                // `LOCKED` is the idle state.
+                // `LOCKED` is the idle state,
+                // and this should be the thread that put it there.
                 idle = LOCKED;
                 // One more time through the loop.
                 continue;
