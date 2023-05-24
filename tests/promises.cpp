@@ -219,4 +219,17 @@ TEST_CASE("promises") {
         CHECK(p2->value() == 43);
     }
 
+    SUBCASE("thenv")
+    {
+        auto p1 = factory.pending<int>();
+        auto p2 = p1->thenv([](auto i){
+            return i + 1;
+        });
+        auto p3 = p2->thenv([](auto i){
+            CHECK(i == 43);
+        });
+        sch.schedule([&](){ p1->fulfill(42); });
+        sch.run();
+    }
+
 }

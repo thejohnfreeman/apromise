@@ -3,6 +3,7 @@
 
 #include <atomic>
 #include <cassert>
+#include <concepts>
 #include <exception>
 #include <functional>
 #include <memory>
@@ -46,11 +47,14 @@ enum State {
     REJECTED,
 };
 
+class AsyncPromiseFactory;
+
 class Scheduler {
 public:
     using job_type = std::function<void()>;
     virtual void schedule(job_type&& job) = 0;
     virtual ~Scheduler() {}
+    AsyncPromiseFactory promises();
 };
 
 namespace detail {
@@ -64,8 +68,8 @@ struct Value {
     T value_;
 
     template <typename... Args>
-    void construct(Args&&... args) {
-        std::construct_at(&value_, std::forward<Args>(args)...);
+    Value(Args&&... args) : value_(std::forward<Args>(args)...)
+    {
     }
 
     T const& get() const {
@@ -75,18 +79,11 @@ struct Value {
     T& get() {
         return value_;
     }
-
-    void destroy() {
-        std::destroy_at(&value_);
-    }
 };
 
 template <>
 struct Value<void> {
-    template <typename...>
-    void construct() {}
     void get() const {}
-    void destroy() {}
 };
 
 template <typename T, typename C, typename V>
@@ -104,7 +101,7 @@ union Storage {
 
     template <typename... Args>
     Storage(construct_value, Args&&... args)
-    : value_{std::forward<Args>(args)...}
+    : value_(std::forward<Args>(args)...)
     {}
 
     // This form was written before landing on the chosen `error_type`.
@@ -122,7 +119,8 @@ union Storage {
 
     template <typename... Args>
     void construct_value(Args&&... args) {
-        value_.construct(std::forward<Args>(args)...);
+        std::construct_at<Value<value_type>>(
+            &value_, std::forward<Args>(args)...);
     }
 
     decltype(auto) get_value() const {
@@ -134,7 +132,7 @@ union Storage {
     }
 
     void destroy_value() {
-        value_.destroy();
+        std::destroy_at<Value<value_type>>(&value_);
     }
 };
 
@@ -299,6 +297,12 @@ public:
     }
 };
 
+inline AsyncPromiseFactory
+Scheduler::promises()
+{
+    return AsyncPromiseFactory(*this);
+}
+
 template <typename V>
 class AsyncPromise
 : public std::enable_shared_from_this<AsyncPromise<V>>
@@ -312,11 +316,13 @@ public:
 
 private:
     AsyncPromiseFactory factory_;
-    std::atomic<State> state_ = PENDING;
+    std::atomic<State> status_ = PENDING;
     storage_type storage_;
 
 public:
     AsyncPromise() = delete;
+    AsyncPromise(AsyncPromise const&) = delete;
+    AsyncPromise(AsyncPromise&&) = delete;
 
     AsyncPromise(Scheduler& scheduler, detail::construct_callbacks)
     : factory_(scheduler)
@@ -325,21 +331,22 @@ public:
     template <typename... Args>
     AsyncPromise(Scheduler& scheduler, detail::construct_value ctor, Args&&... args)
     : factory_(scheduler)
-    , state_(FULFILLED)
+    , status_(FULFILLED)
     , storage_(ctor, std::forward<Args>(args)...)
     {}
 
     template <typename... Args>
     AsyncPromise(Scheduler& scheduler, detail::construct_error ctor, Args&&... args)
     : factory_(scheduler)
-    , state_(REJECTED)
+    , status_(REJECTED)
     , storage_(ctor, std::forward<Args>(args)...)
     {}
 
     ~AsyncPromise()
     {
         auto status = state();
-        if (status == PENDING)
+        assert(status != WRITING);
+        if (status == PENDING || status == LOCKED)
         {
             std::destroy_at(&storage_.callbacks_);
         }
@@ -357,14 +364,25 @@ public:
         }
     }
 
+    Scheduler& scheduler() const {
+        return factory_.scheduler();
+    }
+
     State state() const {
-        return state_.load(std::memory_order_acquire);
+        return status_.load(std::memory_order_acquire);
     }
 
     bool settled() const {
-        auto self = follow();
-        auto status = self->state();
+        auto status = state_();
         return status == FULFILLED || status == REJECTED;
+    }
+
+    bool fulfilled() const {
+        return state_() == FULFILLED;
+    }
+
+    bool rejected() const {
+        return state_() == REJECTED;
     }
 
     bool lock() {
@@ -400,10 +418,10 @@ public:
             if (lprev != PENDING) {
                 // This should be unreachable, but we can recover.
                 if (rprev == LOCKED) {
-                    rhs->state_.store(LOCKED, std::memory_order_release);
+                    rhs->status_.store(LOCKED, std::memory_order_release);
                 }
                 if (lprev == LOCKED) {
-                    lhs->state_.store(LOCKED, std::memory_order_release);
+                    lhs->status_.store(LOCKED, std::memory_order_release);
                 }
                 return false;
             }
@@ -429,11 +447,11 @@ public:
         std::destroy_at(&rhs->storage_.callbacks_);
         // Make `rhs` link to `lhs`.
         std::construct_at(&rhs->storage_.link_, lhs->shared_from_this());
-        rhs->state_.store(LINKED, std::memory_order_release);
+        rhs->status_.store(LINKED, std::memory_order_release);
 
         if (lprev == PENDING || lprev == LOCKED) {
             std::move(callbacks.begin(), callbacks.end(), std::back_inserter(lhs->storage_.callbacks_));
-            lhs->state_.store(lprev, std::memory_order_release);
+            lhs->status_.store(lprev, std::memory_order_release);
         } else {
             for (auto& cb : callbacks) {
                 lhs->factory_.scheduler().schedule(
@@ -460,12 +478,12 @@ public:
             return;
         }
         self->storage_.callbacks_.push_back(std::move(cb));
-        self->state_.store(previous, std::memory_order_release);
+        self->status_.store(previous, std::memory_order_release);
     }
 
     template <typename F>
     decltype(auto) then(F&& f) {
-        using R = std::invoke_result_t<F, AsyncPromise::pointer_type>;
+        using R = std::invoke_result_t<F, pointer_type const&>;
         using Fulfiller = detail::Fulfiller<R>;
         auto q = factory_.pending<typename Fulfiller::value_type>();
         auto cb = [q, f = std::move(f)](pointer_type const& p) mutable {
@@ -477,6 +495,20 @@ public:
         };
         subscribe(cb);
         return q;
+    }
+
+    // TODO: Any way to distinguish calls to this method
+    // if it were an overload of `then`?
+    template <typename F>
+    decltype(auto) thenv(F&& f) {
+        return then([f = std::forward<F>(f)] (auto const& p) {
+            auto state = p->state();
+            if (state == REJECTED) {
+                std::rethrow_exception(p->error());
+            }
+            assert(state == FULFILLED);
+            return f(p->value());
+        });
     }
 
     decltype(auto) reify() const {
@@ -527,6 +559,16 @@ public:
         return self->error_();
     }
 
+    std::string message() const {
+        try {
+            std::rethrow_exception(error());
+        } catch (std::exception const& error) {
+            return error.what();
+        }
+        // C++23: std::unreachable().
+        return "unreachable";
+    }
+
     template <typename... Args>
     bool fulfill(Args&&... args) {
         return settle(
@@ -569,6 +611,11 @@ private:
         return p;
     }
 
+    State state_() const {
+        auto self = follow();
+        return self->state();
+    }
+
     decltype(auto) value_() const {
         return storage_.get_value();
     }
@@ -596,7 +643,7 @@ private:
     State transition_(AsyncPromise*& self, State desired) {
         State idle = PENDING;
         State expected = idle;
-        while (!self->state_.compare_exchange_weak(
+        while (!self->status_.compare_exchange_weak(
                     expected, desired, std::memory_order_acquire))
         {
             if (expected == WRITING) {
@@ -634,10 +681,11 @@ private:
             // Only one thread should ever call `settle`.
             return false;
         }
-        decltype(storage_.callbacks_) callbacks(std::move(self->storage_.callbacks_));
+        decltype(self->storage_.callbacks_) callbacks;
+        std::swap(callbacks, self->storage_.callbacks_);
         std::destroy_at(&self->storage_.callbacks_);
         (self->storage_.*method)(std::forward<Args>(args)...);
-        self->state_.store(status, std::memory_order_release);
+        self->status_.store(status, std::memory_order_release);
         for (auto& cb : callbacks) {
             self->factory_.scheduler().schedule(
                 [self = self->shared_from_this(), cb = std::move(cb)] ()
