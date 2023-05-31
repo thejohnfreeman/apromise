@@ -232,4 +232,15 @@ TEST_CASE("promises") {
         sch.run();
     }
 
+    SUBCASE("cancel")
+    {
+        auto p1 = factory.pending<int>();
+        auto p2 = p1->thenv([](auto i){
+            CHECK(false);
+        });
+        REQUIRE(p1->cancel());
+        sch.schedule([&](){ CHECK(!p1->fulfill(42)); });
+        sch.run();
+    }
+
 }

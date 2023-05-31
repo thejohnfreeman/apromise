@@ -45,6 +45,8 @@ enum State {
     FULFILLED,
     // The promise has been settled with an error.
     REJECTED,
+    // The promise has been settled with nothing.
+    CANCELLED,
 };
 
 class AsyncPromiseFactory;
@@ -375,7 +377,7 @@ public:
 
     bool settled() const {
         auto status = state();
-        return status == FULFILLED || status == REJECTED;
+        return status == FULFILLED || status == REJECTED || status == CANCELLED;
     }
 
     bool fulfilled() const {
@@ -384,6 +386,10 @@ public:
 
     bool rejected() const {
         return state() == REJECTED;
+    }
+
+    bool cancelled() const {
+        return state() == CANCELLED;
     }
 
     bool lock() {
@@ -417,7 +423,8 @@ public:
             // `rhs` is settled or locked.
             // `lhs` must be pending.
             if (lprev != PENDING) {
-                // This should be unreachable, but we can recover.
+                // This should be unreachable, but we can recover
+                // as if this method were never called.
                 if (rprev == LOCKED) {
                     rhs->status_.store(LOCKED, std::memory_order_release);
                 }
@@ -453,7 +460,7 @@ public:
         if (lprev == PENDING || lprev == LOCKED) {
             std::move(callbacks.begin(), callbacks.end(), std::back_inserter(lhs->storage_.callbacks_));
             lhs->status_.store(lprev, std::memory_order_release);
-        } else {
+        } else if (lprev != CANCELLED) {
             for (auto& cb : callbacks) {
                 lhs->factory_.scheduler().schedule(
                     [self = lhs->shared_from_this(), cb = std::move(cb)] () {
@@ -471,11 +478,13 @@ public:
         State previous = transition_(self, WRITING);
         if (previous != PENDING && previous != LOCKED) {
             // The promise is settled. No longer taking subscribers.
-            self->factory_.scheduler().schedule(
-                [self = self->shared_from_this(), cb = std::move(cb)] () {
-                    cb(std::move(self));
-                }
-            );
+            if (previous != CANCELLED) {
+                self->factory_.scheduler().schedule(
+                    [self = self->shared_from_this(), cb = std::move(cb)] () {
+                        cb(std::move(self));
+                    }
+                );
+            }
             return;
         }
         self->storage_.callbacks_.push_back(std::move(cb));
@@ -591,6 +600,19 @@ public:
                 std::move(error));
     }
 
+    bool cancel() {
+        auto self = this;
+        State previous = transition_(self, CANCELLED);
+        if (previous != PENDING && previous != LOCKED) {
+            // The promise was already settled. Nothing left to do.
+            return false;
+        }
+        // We are the thread that cancelled,
+        // and the promsie was in an idle state.
+        std::destroy_at(&self->storage_.callbacks_);
+        return true;
+    }
+
 private:
     template <typename W>
     friend class AsyncPromise;
@@ -636,7 +658,7 @@ private:
     /**
      * @return `PENDING` or `LOCKED` if the transition succeeded.
      * Otherwise, whatever state prevented the transition
-     * from ever succeeding, one of `FULFILLED` or `REJECTED`
+     * from ever succeeding, one of `FULFILLED`, `REJECTED`, or `CANCELLED`
      * (or `LOCKED` only if `desired == LOCKED`).
      * Will never be `WRITING` or `LINKED`.
      */
@@ -678,8 +700,10 @@ private:
         // until it is constructed.
         State previous = transition_(self, WRITING);
         if (previous != PENDING && previous != LOCKED) {
-            // This should be unreachable.
-            // Only one thread should ever call `settle`.
+            // This should be unreachable unless `previous == CANCELLED`.
+            // Only one thread should ever call `settle`,
+            // but it does not have to check for cancellation.
+            assert(previous == CANCELLED);
             return false;
         }
         decltype(self->storage_.callbacks_) callbacks;
