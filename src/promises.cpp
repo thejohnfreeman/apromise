@@ -24,12 +24,11 @@ int main(int argc, const char** argv) {
     std::printf("sizeof(promise) == %lu\n", sizeof(promise_type));
 
     decltype(auto) sch = SingleThreadedScheduler::dflt();
-    auto factory = AsyncPromiseFactory(sch);
 
     {
-        auto p1 = factory.pending<int>();
-        auto p2 = factory.pending<int>();
-        auto p3 = factory.apply([](int a, int b){return a + b; }, p1, p2);
+        auto p1 = sch.pending<int>();
+        auto p2 = sch.pending<int>();
+        auto p3 = sch.apply([](int a, int b){ return a + b; }, p1, p2);
         auto p4 = p3->then([](auto p){
             std::printf("value == %d\n", p->value());
         });

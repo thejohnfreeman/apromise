@@ -19,46 +19,6 @@ struct nth_type : public std::tuple_element<I, std::tuple<Ts...>> {};
 template <std::size_t I, typename... Ts>
 using nth_type_t = typename nth_type<I, Ts...>::type;
 
-enum State {
-    // IDLE STATES
-    // In an idle state, the promise is waiting to transition to a terminal
-    // state. It holds callbacks in its storage.
-
-    // The initial idle state.
-    PENDING,
-    // A thread has indicated that it will settle the promise.
-    // The promise may never transition back to the `PENDING` state.
-    LOCKED,
-
-    // LOCKED STATE
-    // In the locked state, a thread is writing the storage.
-    // No other thread may read or write the storage.
-    WRITING,
-
-    // TERMINAL STATES
-    // In a terminal state, the promise will never change states again.
-    // Its storage will never be written again, except by the destructor.
-
-    // The promise has been linked to another.
-    LINKED,
-    // The promise has been settled with a value.
-    FULFILLED,
-    // The promise has been settled with an error.
-    REJECTED,
-    // The promise has been settled with nothing.
-    CANCELLED,
-};
-
-class AsyncPromiseFactory;
-
-class Scheduler {
-public:
-    using job_type = std::function<void()>;
-    virtual void schedule(job_type&& job) = 0;
-    virtual ~Scheduler() {}
-    AsyncPromiseFactory promises();
-};
-
 namespace detail {
 
 struct construct_callbacks {};
@@ -143,8 +103,88 @@ struct Fulfiller;
 
 }
 
+enum State {
+    // IDLE STATES
+    // In an idle state, the promise is waiting to transition to a terminal
+    // state. It holds callbacks in its storage.
+
+    // The initial idle state.
+    PENDING,
+    // A thread has indicated that it will settle the promise.
+    // The promise may never transition back to the `PENDING` state.
+    LOCKED,
+
+    // LOCKED STATE
+    // In the locked state, a thread is writing the storage.
+    // No other thread may read or write the storage.
+    WRITING,
+
+    // TERMINAL STATES
+    // In a terminal state, the promise will never change states again.
+    // Its storage will never be written again, except by the destructor.
+
+    // The promise has been linked to another.
+    LINKED,
+    // The promise has been settled with a value.
+    FULFILLED,
+    // The promise has been settled with an error.
+    REJECTED,
+    // The promise has been settled with nothing.
+    CANCELLED,
+};
+
 template <typename V>
 class AsyncPromise;
+
+template <typename F, typename... Args>
+struct ApplyState;
+
+class Scheduler {
+public:
+    using job_type = std::function<void()>;
+    virtual void schedule(job_type&& job) = 0;
+    virtual ~Scheduler() {}
+
+    template <typename V>
+    auto pending() {
+        return std::make_shared<AsyncPromise<V>>(
+                *this, detail::construct_callbacks{});
+    }
+
+    template <typename V, typename... Args>
+    auto fulfilled(Args&&... args) {
+        return std::make_shared<AsyncPromise<V>>(
+                *this, detail::construct_value{}, std::forward<Args>(args)...);
+    }
+
+    template <typename V, typename E>
+    auto rejected(E const& error) {
+        return std::make_shared<AsyncPromise<V>>(
+                *this, detail::construct_error{}, std::make_exception_ptr(error));
+    }
+
+    template <typename V>
+    auto cast(std::shared_ptr<void> p) {
+            return std::static_pointer_cast<AsyncPromise<V>>(p);
+    }
+
+    template <typename F, typename... Args>
+    auto apply(F&& function, std::shared_ptr<AsyncPromise<Args>>... args)
+    -> typename AsyncPromise<std::invoke_result_t<F, Args...>>::pointer_type
+    {
+        using R = std::invoke_result_t<F, Args...>;
+        auto output = pending<R>();
+        auto state = std::make_shared<ApplyState<F, Args...>>(
+                output, std::move(function));
+        state->addCallbacks(args...);
+        return output;
+        // All of the inputs now hold callbacks that hold a shared pointer to
+        // the shared state.
+        // We will now release our shared pointer to the shared state.
+        // The last input that destroys its calllback will destroy the shared
+        // state.
+    }
+};
 
 /** Shared state collecting arguments for a function application. */
 template <typename F, typename... Args>
@@ -223,7 +263,7 @@ struct ApplyState
         if (!valid_.load(std::memory_order_relaxed)) {
             return;
         }
-        output_->factory_.scheduler().schedule(
+        output_->scheduler_.schedule(
         [self = this->shared_from_this()]() {
             try {
                 self->output_->fulfill(self->invoke());
@@ -240,71 +280,6 @@ struct ApplyState
     }
 };
 
-/**
- * An `AsyncPromiseFactory` is just a decorator around a Scheduler that
- * adds no state, just a set of helper functions.
- */
-class AsyncPromiseFactory {
-private:
-    using job_type = Scheduler::job_type;
-    Scheduler& scheduler_;
-
-public:
-    AsyncPromiseFactory(Scheduler& scheduler)
-    : scheduler_(scheduler)
-    {}
-
-    Scheduler& scheduler() const {
-        return scheduler_;
-    }
-
-    template <typename V>
-    auto pending() {
-        return std::make_shared<AsyncPromise<V>>(
-                scheduler_, detail::construct_callbacks{});
-    }
-
-    template <typename V, typename... Args>
-    auto fulfilled(Args&&... args) {
-        return std::make_shared<AsyncPromise<V>>(
-                scheduler_, detail::construct_value{}, std::forward<Args>(args)...);
-    }
-
-    template <typename V, typename E>
-    auto rejected(E const& error) {
-        return std::make_shared<AsyncPromise<V>>(
-                scheduler_, detail::construct_error{}, std::make_exception_ptr(error));
-    }
-
-    template <typename V>
-    auto cast(std::shared_ptr<void> p) {
-            return std::static_pointer_cast<AsyncPromise<V>>(p);
-    }
-
-    template <typename F, typename... Args>
-    auto apply(F&& function, std::shared_ptr<AsyncPromise<Args>>... args)
-    -> typename AsyncPromise<std::invoke_result_t<F, Args...>>::pointer_type
-    {
-        using R = std::invoke_result_t<F, Args...>;
-        auto output = pending<R>();
-        auto state = std::make_shared<ApplyState<F, Args...>>(
-                output, std::move(function));
-        state->addCallbacks(args...);
-        return output;
-        // All of the inputs now hold callbacks that hold a shared pointer to
-        // the shared state.
-        // We will now release our shared pointer to the shared state.
-        // The last input that destroys its calllback will destroy the shared
-        // state.
-    }
-};
-
-inline AsyncPromiseFactory
-Scheduler::promises()
-{
-    return AsyncPromiseFactory(*this);
-}
-
 template <typename V>
 class AsyncPromise
 : public std::enable_shared_from_this<AsyncPromise<V>>
@@ -317,7 +292,7 @@ public:
     using error_type = typename storage_type::error_type;
 
 private:
-    AsyncPromiseFactory factory_;
+    Scheduler& scheduler_;
     std::atomic<State> status_ = PENDING;
     storage_type storage_;
 
@@ -327,19 +302,19 @@ public:
     AsyncPromise(AsyncPromise&&) = delete;
 
     AsyncPromise(Scheduler& scheduler, detail::construct_callbacks)
-    : factory_(scheduler)
+    : scheduler_(scheduler)
     {}
 
     template <typename... Args>
     AsyncPromise(Scheduler& scheduler, detail::construct_value ctor, Args&&... args)
-    : factory_(scheduler)
+    : scheduler_(scheduler)
     , status_(FULFILLED)
     , storage_(ctor, std::forward<Args>(args)...)
     {}
 
     template <typename... Args>
     AsyncPromise(Scheduler& scheduler, detail::construct_error ctor, Args&&... args)
-    : factory_(scheduler)
+    : scheduler_(scheduler)
     , status_(REJECTED)
     , storage_(ctor, std::forward<Args>(args)...)
     {}
@@ -367,7 +342,7 @@ public:
     }
 
     Scheduler& scheduler() const {
-        return factory_.scheduler();
+        return scheduler_;
     }
 
     State state() const {
@@ -462,7 +437,7 @@ public:
             lhs->status_.store(lprev, std::memory_order_release);
         } else if (lprev != CANCELLED) {
             for (auto& cb : callbacks) {
-                lhs->factory_.scheduler().schedule(
+                lhs->scheduler_.schedule(
                     [self = lhs->shared_from_this(), cb = std::move(cb)] () {
                         cb(std::move(self));
                     }
@@ -479,7 +454,7 @@ public:
         if (previous != PENDING && previous != LOCKED) {
             // The promise is settled. No longer taking subscribers.
             if (previous != CANCELLED) {
-                self->factory_.scheduler().schedule(
+                self->scheduler_.schedule(
                     [self = self->shared_from_this(), cb = std::move(cb)] () {
                         cb(std::move(self));
                     }
@@ -495,7 +470,7 @@ public:
     decltype(auto) then(F&& f) {
         using R = std::invoke_result_t<F, pointer_type const&>;
         using Fulfiller = detail::Fulfiller<R>;
-        auto q = factory_.pending<typename Fulfiller::value_type>();
+        auto q = scheduler_.pending<typename Fulfiller::value_type>();
         auto cb = [q, f = std::move(f)](pointer_type const& p) mutable {
             try {
                 Fulfiller{q}.fulfillWith(std::move(f), std::move(p));
@@ -712,7 +687,7 @@ private:
         (self->storage_.*method)(std::forward<Args>(args)...);
         self->status_.store(status, std::memory_order_release);
         for (auto& cb : callbacks) {
-            self->factory_.scheduler().schedule(
+            self->scheduler_.schedule(
                 [self = self->shared_from_this(), cb = std::move(cb)] ()
                 { cb(std::move(self)); }
             );
