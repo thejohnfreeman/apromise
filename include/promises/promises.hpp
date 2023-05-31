@@ -171,7 +171,7 @@ struct ApplyState
             std::shared_ptr<AsyncPromise<Arg>> arg,
             Rest&&... rest)
     {
-        arg->subscribe([self = this->shared_from_this()](auto p) {
+        arg->subscribe([self = this->shared_from_this()](auto const& p) {
             self->template setArgument<I>(p);
         });
         addCallback<I+1>(std::forward<Rest>(rest)...);
@@ -193,10 +193,10 @@ struct ApplyState
     }
 
     template <std::size_t I>
-    void setArgument(std::shared_ptr<void> arg) {
+    void setArgument(std::shared_ptr<void> const& arg) {
         using Arg = nth_type_t<I, Args...>;
-        auto p = std::static_pointer_cast<AsyncPromise<Arg>>(std::move(arg));
-        auto state = p->state();
+        auto p = static_cast<AsyncPromise<Arg>*>(arg.get())->follow();
+        auto state = p->state_();
         if (state == REJECTED) {
             bool valid = true;
             if (valid_.compare_exchange_strong(valid, false, std::memory_order_relaxed))
@@ -344,7 +344,7 @@ public:
 
     ~AsyncPromise()
     {
-        auto status = state();
+        auto status = state_();
         assert(status != WRITING);
         if (status == PENDING || status == LOCKED)
         {
@@ -369,20 +369,21 @@ public:
     }
 
     State state() const {
-        return status_.load(std::memory_order_acquire);
+        auto self = follow();
+        return self->state_();
     }
 
     bool settled() const {
-        auto status = state_();
+        auto status = state();
         return status == FULFILLED || status == REJECTED;
     }
 
     bool fulfilled() const {
-        return state_() == FULFILLED;
+        return state() == FULFILLED;
     }
 
     bool rejected() const {
-        return state_() == REJECTED;
+        return state() == REJECTED;
     }
 
     bool lock() {
@@ -502,7 +503,8 @@ public:
     template <typename F>
     decltype(auto) thenv(F&& f) {
         return then([f = std::forward<F>(f)] (auto const& p) {
-            auto state = p->state();
+            // Callbacks should never be called with a linked promise.
+            auto state = p->state_();
             if (state == REJECTED) {
                 std::rethrow_exception(p->error());
             }
@@ -513,7 +515,7 @@ public:
 
     decltype(auto) reify() const {
         auto self = follow();
-        auto status = self->state();
+        auto status = self->state_();
         if (status == REJECTED) {
             std::rethrow_exception(self->error_());
         }
@@ -525,13 +527,13 @@ public:
 
     decltype(auto) value() const {
         auto self = follow();
-        assert(self->state() == FULFILLED);
+        assert(self->state_() == FULFILLED);
         return self->value_();
     }
 
     decltype(auto) value() {
         auto self = follow();
-        assert(self->state() == FULFILLED);
+        assert(self->state_() == FULFILLED);
         return self->value_();
     }
 
@@ -549,13 +551,13 @@ public:
 
     error_type const& error() const {
         auto self = follow();
-        assert(self->state() == REJECTED);
+        assert(self->state_() == REJECTED);
         return self->error_();
     }
 
     error_type& error() {
         auto self = follow();
-        assert(self->state() == REJECTED);
+        assert(self->state_() == REJECTED);
         return self->error_();
     }
 
@@ -597,7 +599,7 @@ private:
 
     AsyncPromise const* follow() const {
         auto p = this;
-        while (p->state() == LINKED) {
+        while (p->state_() == LINKED) {
             p = p->storage_.link_.get();
         }
         return p;
@@ -605,15 +607,14 @@ private:
 
     AsyncPromise* follow() {
         auto p = this;
-        while (p->state() == LINKED) {
+        while (p->state_() == LINKED) {
             p = p->storage_.link_.get();
         }
         return p;
     }
 
     State state_() const {
-        auto self = follow();
-        return self->state();
+        return status_.load(std::memory_order_acquire);
     }
 
     decltype(auto) value_() const {

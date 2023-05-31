@@ -123,7 +123,7 @@ TEST_CASE("promises") {
             called = true;
         });
         tail->link(head);
-        REQUIRE(head->state() == LINKED);
+        REQUIRE(head->state() == PENDING);
         sch.schedule([&](){ tail->fulfill(42); });
         sch.run();
         REQUIRE(head->value() == 42);
@@ -136,7 +136,7 @@ TEST_CASE("promises") {
         auto head = factory.pending<int>();
         auto tail = factory.pending<int>();
         tail->link(head);
-        REQUIRE(head->state() == LINKED);
+        REQUIRE(head->state() == PENDING);
         head->subscribe([&called](auto const& p) {
             REQUIRE(p->state() == FULFILLED);
             CHECK(p->value() == 42);
@@ -159,7 +159,7 @@ TEST_CASE("promises") {
             called = true;
         });
         tail->link(head);
-        REQUIRE(head->state() == LINKED);
+        REQUIRE(head->state() == PENDING);
         sch.schedule([&](){ head->fulfill(42); });
         sch.run();
         REQUIRE(tail->value() == 42);
@@ -172,7 +172,7 @@ TEST_CASE("promises") {
         auto head = factory.pending<int>();
         auto tail = factory.pending<int>();
         tail->link(head);
-        REQUIRE(head->state() == LINKED);
+        REQUIRE(head->state() == PENDING);
         tail->subscribe([&called](auto const& p) {
             REQUIRE(p->state() == FULFILLED);
             CHECK(p->value() == 42);
