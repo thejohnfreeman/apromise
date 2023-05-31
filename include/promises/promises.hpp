@@ -280,9 +280,26 @@ struct ApplyState
     }
 };
 
+template <typename Derived, typename V>
+struct Thenable
+{
+    decltype(auto)
+    value_or(V const& deflt = V()) const
+    {
+        auto self = static_cast<Derived const*>(this)->follow();
+        return (self->state() == FULFILLED) ? self->value_() : deflt;
+    }
+};
+
+template <typename Derived>
+struct Thenable<Derived, void>
+{
+};
+
 template <typename V>
 class AsyncPromise
 : public std::enable_shared_from_this<AsyncPromise<V>>
+, public Thenable<AsyncPromise<V>, V>
 {
 public:
     using pointer_type = std::shared_ptr<AsyncPromise<V>>;
@@ -295,6 +312,9 @@ private:
     Scheduler& scheduler_;
     std::atomic<State> status_ = PENDING;
     storage_type storage_;
+
+    template <typename, typename>
+    friend struct Thenable;
 
 public:
     AsyncPromise() = delete;

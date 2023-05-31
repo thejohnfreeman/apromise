@@ -242,4 +242,14 @@ TEST_CASE("promises") {
         sch.run();
     }
 
+    SUBCASE("value_or")
+    {
+        auto e = std::runtime_error("hello, world!");
+        auto p1 = sch.rejected<int>(e);
+        CHECK(p1->value_or() == 0);
+        CHECK(p1->value_or(42) == 42);
+        auto p2 = sch.fulfilled<int>(3);
+        CHECK(p2->value_or() == 3);
+    }
+
 }
