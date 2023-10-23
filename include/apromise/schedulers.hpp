@@ -1,11 +1,11 @@
-#ifndef PROMISES_SCHEDULERS_HPP
-#define PROMISES_SCHEDULERS_HPP
+#ifndef APROMISE_SCHEDULERS_HPP
+#define APROMISE_SCHEDULERS_HPP
 
-#include <promises/promises.hpp>
+#include <apromise/apromise.hpp>
 
 #include <list>
 
-namespace promises {
+namespace apromise {
 
 class SingleThreadedScheduler : public Scheduler {
 private:

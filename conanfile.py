@@ -2,8 +2,10 @@ from conan import ConanFile
 from conan.tools.cmake import CMake
 
 class Promises(ConanFile):
-    name = 'promises'
+    name = 'apromise'
     version = '0.1.0'
+    user = 'github'
+    channel = 'thejohnfreeman'
 
     license = 'ISC'
     author = 'John Freeman <jfreeman08@gmail.com>'
@@ -12,7 +14,7 @@ class Promises(ConanFile):
     options = {'shared': [True, False], 'fPIC': [True, False]}
     default_options = {'shared': False, 'fPIC': True}
 
-    requires = ['cupcake/0.1.0']
+    requires = ['cupcake/0.4.0@github/thejohnfreeman']
     test_requires = ['doctest/2.4.8']
     generators = ['CMakeDeps', 'CMakeToolchain']
 

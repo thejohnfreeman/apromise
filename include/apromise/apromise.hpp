@@ -1,5 +1,5 @@
-#ifndef PROMISES_HPP
-#define PROMISES_HPP
+#ifndef APROMISE_APROMISE_HPP
+#define APROMISE_APROMISE_HPP
 
 #include <atomic>
 #include <cassert>
@@ -12,7 +12,7 @@
 #include <tuple>
 #include <vector>
 
-namespace promises {
+namespace apromise {
 
 template <std::size_t I, typename... Ts>
 struct nth_type : public std::tuple_element<I, std::tuple<Ts...>> {};

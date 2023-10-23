@@ -5,11 +5,11 @@
 #define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
 #include <doctest/doctest.h>
 
-#include <promises/promises.hpp>
-#include <promises/schedulers.hpp>
+#include <apromise/apromise.hpp>
+#include <apromise/schedulers.hpp>
 
-TEST_CASE("promises") {
-    using namespace promises;
+TEST_CASE("apromise") {
+    using namespace apromise;
 
     auto sch = SingleThreadedScheduler::dflt();
 

@@ -2,11 +2,11 @@
 #include <functional>
 #include <vector>
 
-#include <promises/promises.hpp>
-#include <promises/schedulers.hpp>
+#include <apromise/apromise.hpp>
+#include <apromise/schedulers.hpp>
 
 int main(int argc, const char** argv) {
-    using namespace promises;
+    using namespace apromise;
 
     using promise_type = AsyncPromise<int>;
     using value_type = promise_type::value_type;
